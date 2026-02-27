@@ -40,6 +40,7 @@ export default function Page() {
 
   // ── Visualization state ──
   const [layout, setLayout] = useState<LayoutAlgorithm>("force-directed")
+  const [spacingMultiplier, setSpacingMultiplier] = useState(1.5)
   const [showLabels, setShowLabels] = useState(true)
   const [showMetrics, setShowMetrics] = useState(true)
   const [colorBy, setColorBy] = useState<"area" | "lsa-type" | "role">("area")
@@ -108,7 +109,7 @@ export default function Page() {
   const handlePollingUpdate = useCallback(
     (newTopo: OSPFTopology, changes: TopologyChange[]) => {
       const { width, height } = canvasSizeRef.current
-      const graph = buildGraph(newTopo, layout, width, height)
+      const graph = buildGraph(newTopo, layout, width, height, spacingMultiplier)
 
       if (changes.length > 0) {
         const annotatedNodes = applyNodeStatuses(graph.nodes, changes, nodes)
@@ -125,7 +126,7 @@ export default function Page() {
 
       setTopology(newTopo)
     },
-    [layout, nodes, edges, notifyChanges, autoFitView]
+    [layout, spacingMultiplier, nodes, edges, notifyChanges, autoFitView]
   )
 
   const { pollingState, startPolling, stopPolling, setInterval: setPollingInterval } =
@@ -151,7 +152,7 @@ export default function Page() {
         if (topology) {
           const changes = diffTopologies(topology, parsed)
           if (changes.length > 0) {
-            const graph = buildGraph(parsed, layout, width, height)
+            const graph = buildGraph(parsed, layout, width, height, spacingMultiplier)
             const annotatedNodes = applyNodeStatuses(graph.nodes, changes, nodes)
             const annotatedEdges = applyEdgeStatuses(graph.edges, changes, edges)
             setNodes(annotatedNodes)
@@ -166,7 +167,7 @@ export default function Page() {
         }
 
         setTopology(parsed)
-        const graph = buildGraph(parsed, layout, width, height)
+        const graph = buildGraph(parsed, layout, width, height, spacingMultiplier)
         setNodes(graph.nodes)
         setEdges(graph.edges)
         setSelectedNodeId(null)
@@ -179,7 +180,7 @@ export default function Page() {
       }
       setIsParsing(false)
     }, 50)
-  }, [inputText, layout, topology, nodes, edges, notifyChanges, autoFitView])
+  },     [inputText, layout, spacingMultiplier, topology, nodes, edges, notifyChanges, autoFitView])
 
   // ── SSH data received ──
   const handleSSHData = useCallback(
@@ -199,7 +200,7 @@ export default function Page() {
         if (topology) {
           const changes = diffTopologies(topology, parsed)
           if (changes.length > 0) {
-            const graph = buildGraph(parsed, layout, width, height)
+            const graph = buildGraph(parsed, layout, width, height, spacingMultiplier)
             const annotatedNodes = applyNodeStatuses(graph.nodes, changes, nodes)
             const annotatedEdges = applyEdgeStatuses(graph.edges, changes, edges)
             setNodes(annotatedNodes)
@@ -214,7 +215,7 @@ export default function Page() {
         }
 
         setTopology(parsed)
-        const graph = buildGraph(parsed, layout, width, height)
+        const graph = buildGraph(parsed, layout, width, height, spacingMultiplier)
         setNodes(graph.nodes)
         setEdges(graph.edges)
         setSelectedNodeId(null)
@@ -227,7 +228,7 @@ export default function Page() {
         setParseError("Failed to parse OSPF data from " + host)
       }
     },
-    [topology, layout, nodes, edges, notifyChanges, autoFitView]
+    [topology, layout, spacingMultiplier, nodes, edges, notifyChanges, autoFitView]
   )
 
   // ── Clear ──
@@ -248,13 +249,28 @@ export default function Page() {
       setLayout(newLayout)
       if (topology) {
         const { width, height } = canvasSizeRef.current
-        const graph = buildGraph(topology, newLayout, width, height)
+        const graph = buildGraph(topology, newLayout, width, height, spacingMultiplier)
         setNodes(graph.nodes)
         setEdges(graph.edges)
         autoFitView(graph.nodes)
       }
     },
-    [topology, autoFitView]
+    [topology, spacingMultiplier, autoFitView]
+  )
+
+  // ── Spacing change handler ──
+  const handleSpacingChange = useCallback(
+    (value: number) => {
+      setSpacingMultiplier(value)
+      if (topology) {
+        const { width, height } = canvasSizeRef.current
+        const graph = buildGraph(topology, layout, width, height, value)
+        setNodes(graph.nodes)
+        setEdges(graph.edges)
+        autoFitView(graph.nodes)
+      }
+    },
+    [topology, layout, autoFitView]
   )
 
   // ── Focus node (from search) ──
@@ -449,6 +465,8 @@ export default function Page() {
                   onSetPollingInterval={setPollingInterval}
                   events={events}
                   nodes={filteredNodes}
+                  spacingMultiplier={spacingMultiplier}
+                  onSpacingChange={handleSpacingChange}
                 />
               </ScrollArea>
             </div>

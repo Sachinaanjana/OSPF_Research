@@ -395,22 +395,26 @@ function parseLinkSubBlocks(lsaLines: string[]): RawLink[] {
     for (let i = start + 1; i < end; i++) {
       const t = lsaLines[i].trim()
 
-      // "(Link ID) Designated Router address: X.X.X.X"
-      // "(Link ID) Neighboring Router ID: X.X.X.X"
-      // "(Link ID) Net's IP address: X.X.X.X"
-      const lidM = t.match(/\(Link ID\)[^:]*:\s*([\d.]+)/i)
+      // Match Link ID in multiple formats:
+      // "(Link ID) Designated Router address: X"
+      // "(Link ID) Neighboring Router ID: X"
+      // "(Link ID) Net's IP address: X"
+      // "Link ID: X" (some IOS versions)
+      const lidM = t.match(/(?:\(Link ID\)[^:]*|Link\s+ID):\s*([\d.]+)/i)
       if (lidM) { linkId = lidM[1]; continue }
 
-      // "(Link Data) Router Interface address: X.X.X.X"
-      // "(Link Data) Network Mask: /X or X.X.X.X"
-      const ldM = t.match(/\(Link Data\)[^:]*:\s*([\d.\/]+)/i)
+      // Match Link Data in multiple formats:
+      // "(Link Data) Router Interface address: X"
+      // "(Link Data) Network Mask: X"
+      // "Link Data: X" (some IOS versions)
+      const ldM = t.match(/(?:\(Link Data\)[^:]*|Link\s+Data):\s*([\d.\/]+)/i)
       if (ldM) { linkData = ldM[1]; continue }
 
-      // "TOS 0 Metrics: N" or "TOS 0 Metric: N"
-      const metM = t.match(/TOS\s+0\s+Metrics?:\s*(\d+)/i)
+      // "TOS 0 Metrics: N", "TOS 0 Metric: N", "TOS: 0  Metric: N"
+      const metM = t.match(/TOS\s*:?\s*0\s+Metrics?:\s*(\d+)/i)
       if (metM) { metric = parseInt(metM[1]); continue }
 
-      // Some IOS versions show just "Metric: N" inside a link block
+      // Standalone "Metric: N" inside a link block (some IOS versions)
       const metM2 = t.match(/^Metric:\s*(\d+)/i)
       if (metM2 && metric === 0) { metric = parseInt(metM2[1]); continue }
     }

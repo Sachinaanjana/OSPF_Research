@@ -18,10 +18,10 @@ export function getAreaColor(area: string): string {
   return `hsl(${hue}, 65%, 55%)`
 }
 
-function computeLayoutSize(nodeCount: number, baseWidth: number, baseHeight: number) {
-  // Scale canvas with node count, but cap spacing so large graphs don't
-  // spread nodes impossibly far apart. 80px per node works well up to ~400 nodes.
-  const spacingPerNode = nodeCount > 150 ? 70 : nodeCount > 80 ? 90 : 120
+function computeLayoutSize(nodeCount: number, baseWidth: number, baseHeight: number, spacingMultiplier = 1) {
+  // Base spacing per node — scales down for very large graphs, multiplied by user control
+  const baseSpacing = nodeCount > 200 ? 110 : nodeCount > 100 ? 130 : 160
+  const spacingPerNode = baseSpacing * spacingMultiplier
   const minArea = baseWidth * baseHeight
   const desiredArea = Math.max(minArea, nodeCount * spacingPerNode * spacingPerNode)
   const aspect = baseWidth / baseHeight
@@ -34,7 +34,8 @@ export function buildGraph(
   topology: OSPFTopology,
   layout: LayoutAlgorithm,
   viewportWidth: number,
-  viewportHeight: number
+  viewportHeight: number,
+  spacingMultiplier = 1,
 ): { nodes: GraphNode[]; edges: GraphEdge[] } {
   const nodes: GraphNode[] = []
   const edges: GraphEdge[] = []
@@ -78,7 +79,7 @@ export function buildGraph(
     })
   }
 
-  const { width, height } = computeLayoutSize(nodes.length, viewportWidth, viewportHeight)
+  const { width, height } = computeLayoutSize(nodes.length, viewportWidth, viewportHeight, spacingMultiplier)
   applyLayout(nodes, edges, layout, width, height)
   return { nodes, edges }
 }
@@ -129,8 +130,8 @@ function forceDirectedLayout(nodes: GraphNode[], edges: GraphEdge[], width: numb
 
   const centerX = width / 2
   const centerY = height / 2
-  // Ensure minimum 60px spacing between nodes regardless of graph size
-  const nodeSpacing = Math.max(60, 900 / Math.sqrt(n))
+  // Ensure generous spacing — at 239 nodes sqrt(239) ≈ 15.5, giving ~77px minimum
+  const nodeSpacing = Math.max(75, 1200 / Math.sqrt(n))
 
   // Build ID -> index map for O(1) lookups
   const idxMap = new Map<string, number>()
@@ -180,7 +181,7 @@ function forceDirectedLayout(nodes: GraphNode[], edges: GraphEdge[], width: numb
   // Copy positions to typed arrays
   for (let i = 0; i < n; i++) { px[i] = nodes[i].x; py[i] = nodes[i].y }
 
-  const repulsion = Math.max(12000, n * 250)
+  const repulsion = Math.max(20000, n * 400)
   const attraction = 0.004
   const minDist = nodeSpacing * 0.5
 
@@ -376,8 +377,8 @@ function hierarchicalLayout(nodes: GraphNode[], _edges: GraphEdge[], width: numb
     return a.localeCompare(b)
   })
 
-  const cellW = 150
-  const cellH = 130
+  const cellW = 180
+  const cellH = 160
   const areaPadding = 60
   const areaGap = 80
   let currentY = areaPadding

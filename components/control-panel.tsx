@@ -4,6 +4,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
+import { Slider } from "@/components/ui/slider"
 import { Download, RotateCcw, Radio, Activity } from "lucide-react"
 import type { LayoutAlgorithm, LinkType, PollingState, TopologyChange, GraphNode } from "@/lib/ospf-types"
 import { getAreaColor } from "@/lib/layout-engine"
@@ -33,6 +34,8 @@ interface ControlPanelProps {
   onSetPollingInterval: (ms: number) => void
   events: TopologyChange[]
   nodes?: GraphNode[]
+  spacingMultiplier?: number
+  onSpacingChange?: (value: number) => void
 }
 
 export function ControlPanel({
@@ -59,6 +62,8 @@ export function ControlPanel({
   onSetPollingInterval,
   events,
   nodes = [],
+  spacingMultiplier = 1,
+  onSpacingChange,
 }: ControlPanelProps) {
   const abrCount = nodes.filter((n) => n.type === "router" && n.role === "abr").length
   const asbrCount = nodes.filter((n) => n.type === "router" && n.role === "asbr").length
@@ -169,6 +174,27 @@ export function ControlPanel({
             <SelectItem value="radial">Radial</SelectItem>
           </SelectContent>
         </Select>
+
+        {onSpacingChange && (
+          <div className="mt-3">
+            <div className="flex items-center justify-between mb-1.5">
+              <Label className="text-xs text-secondary-foreground">Node Spacing</Label>
+              <span className="text-[10px] font-mono text-muted-foreground">{Math.round(spacingMultiplier * 100)}%</span>
+            </div>
+            <Slider
+              min={50}
+              max={300}
+              step={10}
+              value={[Math.round(spacingMultiplier * 100)]}
+              onValueChange={([v]) => onSpacingChange(v / 100)}
+              className="w-full"
+            />
+            <div className="flex justify-between mt-0.5">
+              <span className="text-[9px] text-muted-foreground">Tight</span>
+              <span className="text-[9px] text-muted-foreground">Spacious</span>
+            </div>
+          </div>
+        )}
       </div>
 
       <div>
