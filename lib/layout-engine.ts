@@ -19,8 +19,11 @@ export function getAreaColor(area: string): string {
 }
 
 function computeLayoutSize(nodeCount: number, baseWidth: number, baseHeight: number) {
+  // Scale canvas with node count, but cap spacing so large graphs don't
+  // spread nodes impossibly far apart. 80px per node works well up to ~400 nodes.
+  const spacingPerNode = nodeCount > 150 ? 70 : nodeCount > 80 ? 90 : 120
   const minArea = baseWidth * baseHeight
-  const desiredArea = Math.max(minArea, nodeCount * 150 * 150)
+  const desiredArea = Math.max(minArea, nodeCount * spacingPerNode * spacingPerNode)
   const aspect = baseWidth / baseHeight
   const h = Math.sqrt(desiredArea / aspect)
   const w = h * aspect
@@ -87,7 +90,8 @@ export function computeAutoFit(
 ): { zoom: number; panX: number; panY: number } {
   if (nodes.length === 0) return { zoom: 1, panX: 0, panY: 0 }
 
-  const padding = 80
+  // Larger padding for small graphs, tighter for large ones
+  const padding = nodes.length > 100 ? 40 : 80
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
   for (const n of nodes) {
     if (n.x < minX) minX = n.x
@@ -100,12 +104,13 @@ export function computeAutoFit(
   const contentH = maxY - minY + padding * 2
   if (contentW <= 0 || contentH <= 0) return { zoom: 1, panX: 0, panY: 0 }
 
-  const zoom = Math.min(viewportWidth / contentW, viewportHeight / contentH, 1.5)
+  // Allow zoom-out further for large graphs (no 1.5 max cap)
+  const zoom = Math.min(viewportWidth / contentW, viewportHeight / contentH)
   const centerX = (minX + maxX) / 2
   const centerY = (minY + maxY) / 2
   const panX = viewportWidth / 2 - centerX * zoom
   const panY = viewportHeight / 2 - centerY * zoom
-  return { zoom: Math.max(0.05, zoom), panX, panY }
+  return { zoom: Math.max(0.03, zoom), panX, panY }
 }
 
 function applyLayout(nodes: GraphNode[], edges: GraphEdge[], layout: LayoutAlgorithm, width: number, height: number) {
@@ -124,7 +129,8 @@ function forceDirectedLayout(nodes: GraphNode[], edges: GraphEdge[], width: numb
 
   const centerX = width / 2
   const centerY = height / 2
-  const nodeSpacing = Math.max(100, 600 / Math.sqrt(n))
+  // Ensure minimum 60px spacing between nodes regardless of graph size
+  const nodeSpacing = Math.max(60, 900 / Math.sqrt(n))
 
   // Build ID -> index map for O(1) lookups
   const idxMap = new Map<string, number>()
@@ -178,8 +184,8 @@ function forceDirectedLayout(nodes: GraphNode[], edges: GraphEdge[], width: numb
   const attraction = 0.004
   const minDist = nodeSpacing * 0.5
 
-  // Adaptive iterations: fewer for very large graphs
-  const iterations = n > 200 ? 100 : n > 100 ? 140 : 200
+  // Adaptive iterations: more for large graphs to ensure convergence
+  const iterations = n > 200 ? 150 : n > 100 ? 180 : 220
   const damping = 0.88
 
   // For large graphs (100+), use grid-based spatial hashing for repulsion
@@ -316,8 +322,8 @@ function forceDirectedLayout(nodes: GraphNode[], edges: GraphEdge[], width: numb
     }
   }
 
-  // Post-process overlap resolution
-  resolveOverlaps(px, py, n, minDist, 8)
+  // Post-process overlap resolution — more passes for large graphs
+  resolveOverlaps(px, py, n, minDist, n > 100 ? 20 : 8)
 
   // Write back to nodes
   for (let i = 0; i < n; i++) {

@@ -263,14 +263,16 @@ export function TopologyCanvas({
   // Determine rendering LOD: at low zoom or many nodes, use simplified shapes
   const detailLevel = useMemo(() => {
     const totalElements = localNodes.length + edges.length
-    if (zoom < 0.3 || totalElements > 800) return "minimal"
-    if (zoom < 0.5 || totalElements > 400) return "simple"
+    if (zoom < 0.15 || totalElements > 2000) return "minimal"
+    if (zoom < 0.3 || totalElements > 1000) return "simple"
     return "detailed"
   }, [zoom, localNodes.length, edges.length])
 
   // Viewport bounds for culling (in world coordinates)
   const viewport = useMemo(() => {
-    const margin = 100
+    // Use a generous margin so nodes near edges of the visible area are never culled.
+    // 300px world-space margin prevents pop-in when panning.
+    const margin = Math.max(300, 500 / zoom)
     return {
       left: (-panX / zoom) - margin,
       top: (-panY / zoom) - margin,
