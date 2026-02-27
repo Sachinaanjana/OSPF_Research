@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback, useMemo, useEffect, useRef } from "react"
+import { useState, useCallback, useMemo, useRef } from "react"
 import { toast } from "sonner"
 import { AppHeader } from "@/components/app-header"
 import { InputPanel } from "@/components/input-panel"
@@ -29,24 +29,7 @@ import {
 } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
-interface AuthUser {
-  name: string
-  email: string
-}
-
 export default function Page() {
-  // ── Auth ──
-  const [user, setUser] = useState<AuthUser | null>(null)
-
-  useEffect(() => {
-    fetch("/api/auth/me")
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (data?.user) setUser(data.user)
-      })
-      .catch(() => {})
-  }, [])
-
   // ── Core topology state ──
   const [inputText, setInputText] = useState("")
   const [isParsing, setIsParsing] = useState(false)
@@ -328,7 +311,7 @@ export default function Page() {
   // ── Render ──
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-background">
-      <AppHeader pollingState={pollingState} user={user} />
+      <AppHeader pollingState={pollingState} />
 
       <div className="flex flex-1 overflow-hidden">
         {/* Left panel - Input */}
