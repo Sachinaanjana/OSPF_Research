@@ -5,7 +5,7 @@ import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { Download, RotateCcw, Radio, Activity } from "lucide-react"
-import type { LayoutAlgorithm, LinkType, PollingState, TopologyChange } from "@/lib/ospf-types"
+import type { LayoutAlgorithm, LinkType, PollingState, TopologyChange, GraphNode } from "@/lib/ospf-types"
 import { getAreaColor } from "@/lib/layout-engine"
 import { EventLog } from "@/components/event-log"
 
@@ -32,6 +32,7 @@ interface ControlPanelProps {
   onStopPolling: () => void
   onSetPollingInterval: (ms: number) => void
   events: TopologyChange[]
+  nodes?: GraphNode[]
 }
 
 export function ControlPanel({
@@ -57,7 +58,10 @@ export function ControlPanel({
   onStopPolling,
   onSetPollingInterval,
   events,
+  nodes = [],
 }: ControlPanelProps) {
+  const abrCount = nodes.filter((n) => n.type === "router" && n.role === "abr").length
+  const asbrCount = nodes.filter((n) => n.type === "router" && n.role === "asbr").length
   return (
     <div className="flex flex-col gap-5 p-4">
       {/* Live Monitor Section */}
@@ -136,6 +140,18 @@ export function ControlPanel({
             <div className="text-lg font-semibold text-foreground font-mono">{edgeCount}</div>
             <div className="text-[10px] text-muted-foreground uppercase tracking-wider">Links</div>
           </div>
+          {abrCount > 0 && (
+            <div className="rounded-md p-2.5 text-center" style={{ backgroundColor: "#38bdf810", border: "1px solid #38bdf830" }}>
+              <div className="text-lg font-semibold font-mono" style={{ color: "#38bdf8" }}>{abrCount}</div>
+              <div className="text-[10px] uppercase tracking-wider" style={{ color: "#38bdf8" }}>ABR</div>
+            </div>
+          )}
+          {asbrCount > 0 && (
+            <div className="rounded-md p-2.5 text-center" style={{ backgroundColor: "#f9731610", border: "1px solid #f9731630" }}>
+              <div className="text-lg font-semibold font-mono" style={{ color: "#f97316" }}>{asbrCount}</div>
+              <div className="text-[10px] uppercase tracking-wider" style={{ color: "#f97316" }}>ASBR</div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -245,6 +261,19 @@ export function ControlPanel({
           <div className="flex items-center gap-2">
             <div className="w-3 h-3 rounded-full bg-amber-400" />
             <span className="text-xs text-secondary-foreground">Changed / Updated</span>
+          </div>
+          <div className="h-px bg-border my-1" />
+          <div className="flex items-center gap-2">
+            <div className="w-5 h-3 rounded-sm flex items-center justify-center" style={{ backgroundColor: "#38bdf8" }}>
+              <span className="text-[6px] font-bold text-black">ABR</span>
+            </div>
+            <span className="text-xs text-secondary-foreground">Area Border Router</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-5 h-3 rounded-sm flex items-center justify-center" style={{ backgroundColor: "#f97316" }}>
+              <span className="text-[6px] font-bold text-black">ASBR</span>
+            </div>
+            <span className="text-xs text-secondary-foreground">AS Boundary Router</span>
           </div>
           <div className="h-px bg-border my-1" />
           <div className="flex items-center gap-2">

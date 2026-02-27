@@ -448,6 +448,7 @@ export default function Page() {
                   onStopPolling={stopPolling}
                   onSetPollingInterval={setPollingInterval}
                   events={events}
+                  nodes={filteredNodes}
                 />
               </ScrollArea>
             </div>

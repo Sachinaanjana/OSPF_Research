@@ -560,6 +560,21 @@ export function TopologyCanvas({
       } else if (detailLevel === "simple") {
         if (node.type === "router") {
           drawRouterSimple(ctx, node.x, node.y, drawColor, isSelected)
+          // Show role badge even in simple mode
+          if (node.role && node.role !== "internal") {
+            const badge = node.role.toUpperCase()
+            const roleColor = ROLE_COLORS[node.role] ?? drawColor
+            ctx.font = "bold 8px system-ui, sans-serif"
+            const badgeW = ctx.measureText(badge).width + 8
+            ctx.fillStyle = roleColor
+            ctx.beginPath()
+            ctx.roundRect(node.x - badgeW / 2, node.y - 16, badgeW, 12, 2)
+            ctx.fill()
+            ctx.fillStyle = "#0d1117"
+            ctx.textAlign = "center"
+            ctx.textBaseline = "middle"
+            ctx.fillText(badge, node.x, node.y - 10)
+          }
         } else {
           drawNetworkSimple(ctx, node.x, node.y, drawColor, isSelected)
         }
@@ -568,9 +583,10 @@ export function TopologyCanvas({
           drawRouterDetailed(ctx, node.x, node.y, 20, drawColor, isSelected)
           if (node.role && node.role !== "internal") {
             const badge = node.role.toUpperCase()
+            const roleColor = ROLE_COLORS[node.role] ?? color
             ctx.font = "bold 9px system-ui, sans-serif"
             const badgeW = ctx.measureText(badge).width + 10
-            ctx.fillStyle = color
+            ctx.fillStyle = roleColor
             ctx.beginPath()
             ctx.roundRect(node.x - badgeW / 2, node.y - 20 * 0.65 - 18, badgeW, 15, 3)
             ctx.fill()
