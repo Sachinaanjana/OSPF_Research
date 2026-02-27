@@ -91,7 +91,22 @@ export function parseOSPFData(input: string): OSPFTopology {
   }
 
   // Build directional P2P links from collected cost data
+  // Also ensure both endpoints exist as router nodes (a router may only appear
+  // as a neighbor reference with no Router LSA of its own in this dump)
   for (const [, p] of p2pCosts) {
+    for (const rid of [p.srcId, p.tgtId]) {
+      if (!routerMap.has(rid)) {
+        routerMap.set(rid, {
+          id: rid,
+          routerId: rid,
+          role: "internal",
+          area: p.area,
+          lsaTypes: [],
+          neighbors: [],
+          networks: [],
+        })
+      }
+    }
     links.push({
       id: `p2p-${p.srcId}-${p.tgtId}`,
       source: p.srcId,
@@ -146,6 +161,25 @@ export function parseOSPFData(input: string): OSPFTopology {
         if (!r.lsaTypes.includes("Network LSA (Type 2)")) {
           r.lsaTypes.push("Network LSA (Type 2)")
         }
+      }
+    }
+  }
+
+  // Ensure any neighbor references not yet in routerMap are added as stub nodes.
+  // This covers routers that only appear as a neighbor in another router's LSA
+  // but have no Router LSA (or Network LSA) of their own in this dump.
+  for (const router of routerMap.values()) {
+    for (const neighborId of router.neighbors) {
+      if (!routerMap.has(neighborId)) {
+        routerMap.set(neighborId, {
+          id: neighborId,
+          routerId: neighborId,
+          role: "internal",
+          area: router.area,
+          lsaTypes: [],
+          neighbors: [],
+          networks: [],
+        })
       }
     }
   }
