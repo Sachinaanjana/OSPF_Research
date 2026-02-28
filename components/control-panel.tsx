@@ -5,8 +5,8 @@ import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { Slider } from "@/components/ui/slider"
-import { Download, RotateCcw, Radio, Activity } from "lucide-react"
-import type { LayoutAlgorithm, LinkType, PollingState, TopologyChange, GraphNode } from "@/lib/ospf-types"
+import { Download, RotateCcw, Radio, Activity, AlertTriangle, CheckCircle2, Shield, Globe, WifiOff, Layers } from "lucide-react"
+import type { LayoutAlgorithm, LinkType, PollingState, TopologyChange, GraphNode, GraphEdge, ViewFilter } from "@/lib/ospf-types"
 import { getAreaColor } from "@/lib/layout-engine"
 import { EventLog } from "@/components/event-log"
 
@@ -34,8 +34,12 @@ interface ControlPanelProps {
   onSetPollingInterval: (ms: number) => void
   events: TopologyChange[]
   nodes?: GraphNode[]
+  allNodes?: GraphNode[]
+  allEdges?: GraphEdge[]
   spacingMultiplier?: number
   onSpacingChange?: (value: number) => void
+  viewFilter?: ViewFilter
+  onViewFilterChange?: (filter: ViewFilter) => void
 }
 
 export function ControlPanel({
@@ -62,14 +66,117 @@ export function ControlPanel({
   onSetPollingInterval,
   events,
   nodes = [],
+  allNodes = [],
+  allEdges = [],
   spacingMultiplier = 1,
   onSpacingChange,
+  viewFilter = "all",
+  onViewFilterChange,
 }: ControlPanelProps) {
-  const abrCount = nodes.filter((n) => n.type === "router" && n.role === "abr").length
-  const asbrCount = nodes.filter((n) => n.type === "router" && n.role === "asbr").length
+  const abrCount = allNodes.filter((n) => n.type === "router" && n.role === "abr").length
+  const asbrCount = allNodes.filter((n) => n.type === "router" && n.role === "asbr").length
+  const downCount = allNodes.filter((n) => n.status === "removed").length
+  const unbalancedCount = allEdges.filter(
+    (e) => e.sourceCost !== e.targetCost && e.linkType === "point-to-point"
+  ).length
+  const balancedCount = allEdges.filter(
+    (e) => e.sourceCost === e.targetCost && e.linkType === "point-to-point" && e.cost > 0
+  ).length
+
+  const viewFilters: { id: ViewFilter; label: string; icon: React.ReactNode; count: number; color: string; bg: string }[] = [
+    {
+      id: "all",
+      label: "All Nodes",
+      icon: <Layers className="w-3 h-3" />,
+      count: allNodes.length,
+      color: "hsl(var(--foreground))",
+      bg: "hsl(var(--secondary))",
+    },
+    {
+      id: "cost-unbalanced",
+      label: "Cost Unbalanced",
+      icon: <AlertTriangle className="w-3 h-3" />,
+      count: unbalancedCount,
+      color: "#f97316",
+      bg: "#f9731615",
+    },
+    {
+      id: "cost-balanced",
+      label: "Cost Balanced",
+      icon: <CheckCircle2 className="w-3 h-3" />,
+      count: balancedCount,
+      color: "#2dd4a0",
+      bg: "#2dd4a015",
+    },
+    {
+      id: "abr",
+      label: "ABR Nodes",
+      icon: <Shield className="w-3 h-3" />,
+      count: abrCount,
+      color: "#38bdf8",
+      bg: "#38bdf815",
+    },
+    {
+      id: "asbr",
+      label: "ASBR Nodes",
+      icon: <Globe className="w-3 h-3" />,
+      count: asbrCount,
+      color: "#e879f9",
+      bg: "#e879f915",
+    },
+    {
+      id: "down",
+      label: "Down Nodes",
+      icon: <WifiOff className="w-3 h-3" />,
+      count: downCount,
+      color: "#f87171",
+      bg: "#f8717115",
+    },
+  ]
   return (
     <div className="flex flex-col gap-5 p-4">
-      {/* Live Monitor Section */}
+      {/* Node View Filter */}
+      {onViewFilterChange && (
+        <div>
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-1.5">
+            <Layers className="w-3.5 h-3.5" />
+            Node View
+          </h3>
+          <div className="flex flex-col gap-1">
+            {viewFilters.map((vf) => {
+              const isActive = viewFilter === vf.id
+              return (
+                <button
+                  key={vf.id}
+                  onClick={() => onViewFilterChange(vf.id)}
+                  className="flex items-center justify-between w-full rounded-md px-2.5 py-2 text-left transition-all"
+                  style={{
+                    backgroundColor: isActive ? vf.bg : "transparent",
+                    border: `1px solid ${isActive ? vf.color + "50" : "transparent"}`,
+                    outline: "none",
+                  }}
+                >
+                  <div className="flex items-center gap-2" style={{ color: isActive ? vf.color : "hsl(var(--muted-foreground))" }}>
+                    {vf.icon}
+                    <span className="text-xs font-medium">{vf.label}</span>
+                  </div>
+                  <span
+                    className="text-[10px] font-mono rounded px-1.5 py-0.5"
+                    style={{
+                      backgroundColor: isActive ? vf.color + "25" : "hsl(var(--secondary))",
+                      color: isActive ? vf.color : "hsl(var(--muted-foreground))",
+                    }}
+                  >
+                    {vf.count}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      <div className="h-px bg-border" />
       <div>
         <h3 className="text-xs font-semibold uppercase tracking-wider text-primary mb-3 flex items-center gap-1.5">
           <Activity className="w-3.5 h-3.5" />
@@ -152,9 +259,9 @@ export function ControlPanel({
             </div>
           )}
           {asbrCount > 0 && (
-            <div className="rounded-md p-2.5 text-center" style={{ backgroundColor: "#f9731610", border: "1px solid #f9731630" }}>
-              <div className="text-lg font-semibold font-mono" style={{ color: "#f97316" }}>{asbrCount}</div>
-              <div className="text-[10px] uppercase tracking-wider" style={{ color: "#f97316" }}>ASBR</div>
+            <div className="rounded-md p-2.5 text-center" style={{ backgroundColor: "#e879f910", border: "1px solid #e879f930" }}>
+              <div className="text-lg font-semibold font-mono" style={{ color: "#e879f9" }}>{asbrCount}</div>
+              <div className="text-[10px] uppercase tracking-wider" style={{ color: "#e879f9" }}>ASBR</div>
             </div>
           )}
         </div>

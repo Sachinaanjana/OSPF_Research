@@ -20,6 +20,7 @@ import type {
   LayoutAlgorithm,
   LinkType,
   TopologyChange,
+  ViewFilter,
 } from "@/lib/ospf-types"
 import {
   PanelLeft,
@@ -53,6 +54,7 @@ export default function Page() {
   const focusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [filterArea, setFilterArea] = useState<string | null>(null)
   const [filterLinkType, setFilterLinkType] = useState<LinkType | null>(null)
+  const [viewFilter, setViewFilter] = useState<ViewFilter>("all")
   const [showLeftPanel, setShowLeftPanel] = useState(true)
   const [showRightPanel, setShowRightPanel] = useState(true)
 
@@ -241,6 +243,7 @@ export default function Page() {
     setSelectedNodeId(null)
     setSelectedEdgeId(null)
     setEvents([])
+    setViewFilter("all")
   }, [])
 
   // ── Layout change ──
@@ -293,25 +296,87 @@ export default function Page() {
     [nodes, zoom]
   )
 
+  // ── View filter logic ──
+  // For cost-unbalanced: edges where sourceCost !== targetCost (asymmetric metrics)
+  // For cost-balanced: edges where sourceCost === targetCost (symmetric metrics)
+  // For down: nodes with status "removed" or edges with status "removed"
+  const unbalancedEdgeNodeIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const e of edges) {
+      if (e.sourceCost !== e.targetCost && e.linkType === "point-to-point") {
+        ids.add(e.source)
+        ids.add(e.target)
+      }
+    }
+    return ids
+  }, [edges])
+
+  const balancedEdgeNodeIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const e of edges) {
+      if (e.sourceCost === e.targetCost && e.linkType === "point-to-point" && e.cost > 0) {
+        ids.add(e.source)
+        ids.add(e.target)
+      }
+    }
+    return ids
+  }, [edges])
+
   // ── Derived state ──
   const areas = useMemo(() => topology?.areas || [], [topology])
 
   const filteredNodes = useMemo(() => {
-    if (!filterArea) return nodes
-    return nodes.filter((n) => n.area === filterArea)
-  }, [nodes, filterArea])
+    let result = nodes
+
+    // Apply area filter
+    if (filterArea) result = result.filter((n) => n.area === filterArea)
+
+    // Apply view filter
+    if (viewFilter === "abr") {
+      result = result.filter((n) => n.type === "router" && n.role === "abr")
+    } else if (viewFilter === "asbr") {
+      result = result.filter((n) => n.type === "router" && n.role === "asbr")
+    } else if (viewFilter === "cost-unbalanced") {
+      result = result.filter((n) => unbalancedEdgeNodeIds.has(n.id))
+    } else if (viewFilter === "cost-balanced") {
+      result = result.filter((n) => balancedEdgeNodeIds.has(n.id))
+    } else if (viewFilter === "down") {
+      result = result.filter((n) => n.status === "removed")
+    }
+
+    return result
+  }, [nodes, filterArea, viewFilter, unbalancedEdgeNodeIds, balancedEdgeNodeIds])
 
   const filteredEdges = useMemo(() => {
     let filtered = edges
-    if (filterArea) {
-      const nodeIds = new Set(filteredNodes.map((n) => n.id))
+
+    const nodeIds = new Set(filteredNodes.map((n) => n.id))
+
+    if (filterArea || viewFilter !== "all") {
       filtered = filtered.filter((e) => nodeIds.has(e.source) && nodeIds.has(e.target))
     }
+
     if (filterLinkType) {
       filtered = filtered.filter((e) => e.linkType === filterLinkType)
     }
+
+    // For cost-unbalanced view: only show the unbalanced edges
+    if (viewFilter === "cost-unbalanced") {
+      filtered = filtered.filter((e) => e.sourceCost !== e.targetCost)
+    }
+
+    // For cost-balanced view: only show the balanced edges
+    if (viewFilter === "cost-balanced") {
+      filtered = filtered.filter((e) => e.sourceCost === e.targetCost && e.cost > 0)
+    }
+
+    // For down view: show removed edges
+    if (viewFilter === "down") {
+      filtered = filtered.filter((e) => e.status === "removed")
+    }
+
     return filtered
-  }, [edges, filteredNodes, filterArea, filterLinkType])
+  }, [edges, filteredNodes, filterArea, filterLinkType, viewFilter])
 
   const selectedNode = useMemo(
     () => (selectedNodeId ? filteredNodes.find((n) => n.id === selectedNodeId) || null : null),
@@ -465,8 +530,12 @@ export default function Page() {
                   onSetPollingInterval={setPollingInterval}
                   events={events}
                   nodes={filteredNodes}
+                  allNodes={nodes}
+                  allEdges={edges}
                   spacingMultiplier={spacingMultiplier}
                   onSpacingChange={handleSpacingChange}
+                  viewFilter={viewFilter}
+                  onViewFilterChange={setViewFilter}
                 />
               </ScrollArea>
             </div>
