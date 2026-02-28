@@ -293,7 +293,7 @@ export default function Page() {
 
   // ── Load snapshot from DB ──
   const handleLoadSnapshot = useCallback(
-    (topoData: unknown, rawText: string | null) => {
+    (topoData: unknown, rawText: string | null, _meta?: unknown) => {
       try {
         const parsed = topoData as OSPFTopology
         if (!parsed?.routers) throw new Error("Invalid topology data")
@@ -348,24 +348,61 @@ export default function Page() {
     [topology, layout, autoFitView]
   )
 
-  // ── Focus node (from search) ──
+  // ── Focus node (from search) — smooth animated zoom-in ──
+  const animFrameRef = useRef<number | null>(null)
+
   const handleFocusNode = useCallback(
     (nodeId: string) => {
       const node = nodes.find((n) => n.id === nodeId)
       if (!node) return
-      const { width, height } = canvasSizeRef.current
-      const targetZoom = Math.max(zoom, 0.8)
-      setPanX(width / 2 - node.x * targetZoom)
-      setPanY(height / 2 - node.y * targetZoom)
-      setZoom(targetZoom)
-      setSelectedNodeId(nodeId)
 
-      // Set focus highlight with auto-clear after 6s
+      const { width, height } = canvasSizeRef.current
+
+      // Target: zoom to 1.8 (node detail level) and center on the node
+      const TARGET_ZOOM = 1.8
+      const targetPanX = width / 2 - node.x * TARGET_ZOOM
+      const targetPanY = height / 2 - node.y * TARGET_ZOOM
+
+      // Cancel any previous animation
+      if (animFrameRef.current !== null) cancelAnimationFrame(animFrameRef.current)
+
+      const startZoom = zoom
+      const startPanX = panX
+      const startPanY = panY
+      const DURATION = 600 // ms
+
+      const startTime = performance.now()
+
+      const animate = (now: number) => {
+        const elapsed = now - startTime
+        const t = Math.min(elapsed / DURATION, 1)
+        // Ease in-out cubic
+        const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
+
+        const currentZoom = startZoom + (TARGET_ZOOM - startZoom) * ease
+        const currentPanX = startPanX + (targetPanX - startPanX) * ease
+        const currentPanY = startPanY + (targetPanY - startPanY) * ease
+
+        setZoom(currentZoom)
+        setPanX(currentPanX)
+        setPanY(currentPanY)
+
+        if (t < 1) {
+          animFrameRef.current = requestAnimationFrame(animate)
+        } else {
+          animFrameRef.current = null
+        }
+      }
+
+      animFrameRef.current = requestAnimationFrame(animate)
+
+      // Select and highlight the node
+      setSelectedNodeId(nodeId)
       setFocusedNodeId(nodeId)
       if (focusTimerRef.current) clearTimeout(focusTimerRef.current)
-      focusTimerRef.current = setTimeout(() => setFocusedNodeId(null), 6000)
+      focusTimerRef.current = setTimeout(() => setFocusedNodeId(null), 8000)
     },
-    [nodes, zoom]
+    [nodes, zoom, panX, panY]
   )
 
   // ── View filter logic ──
