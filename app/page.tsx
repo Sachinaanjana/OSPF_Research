@@ -4,6 +4,7 @@ import { useState, useCallback, useMemo, useRef } from "react"
 import { toast } from "sonner"
 import { AppHeader } from "@/components/app-header"
 import { InputPanel } from "@/components/input-panel"
+import { SnapshotsPanel } from "@/components/snapshots-panel"
 import { TopologyCanvas } from "@/components/topology-canvas"
 import { ControlPanel } from "@/components/control-panel"
 import { DetailsPanel } from "@/components/details-panel"
@@ -27,6 +28,8 @@ import {
   PanelRight,
   ChevronLeft,
   ChevronRight,
+  FileText,
+  Database,
 } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
@@ -58,7 +61,9 @@ export default function Page() {
   const [showLeftPanel, setShowLeftPanel] = useState(true)
   const [showRightPanel, setShowRightPanel] = useState(true)
 
-  // ── Real-time ──
+  // ── Left panel tab ──
+  const [leftTab, setLeftTab] = useState<"input" | "snapshots">("input")
+  const [isSaving, setIsSaving] = useState(false)
   const [events, setEvents] = useState<TopologyChange[]>([])
   const canvasSizeRef = useRef({ width: 900, height: 600 })
 
@@ -226,6 +231,19 @@ export default function Page() {
         setFilterArea(null)
         setFilterLinkType(null)
         toast.success(`Loaded ${parsed.routers.length} routers from ${host}`)
+
+        // Auto-save SSH snapshots to DB
+        fetch("/api/snapshots", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            topology: parsed,
+            raw_text: data,
+            source: "ssh",
+            host,
+            name: `${host} — ${parsed.routers.length} routers`,
+          }),
+        }).catch(() => {/* silent */})
       } catch {
         setParseError("Failed to parse OSPF data from " + host)
       }
@@ -245,6 +263,60 @@ export default function Page() {
     setEvents([])
     setViewFilter("all")
   }, [])
+
+  // ── Save snapshot to DB ──
+  const handleSaveSnapshot = useCallback(async () => {
+    if (!topology) {
+      toast.error("No topology to save. Parse some OSPF data first.")
+      return
+    }
+    setIsSaving(true)
+    try {
+      const res = await fetch("/api/snapshots", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          topology,
+          raw_text: inputText || null,
+          source: "manual",
+          name: `Snapshot — ${topology.routers.length} routers`,
+        }),
+      })
+      if (!res.ok) throw new Error("Save failed")
+      toast.success("Topology saved to database")
+    } catch {
+      toast.error("Failed to save snapshot")
+    } finally {
+      setIsSaving(false)
+    }
+  }, [topology, inputText])
+
+  // ── Load snapshot from DB ──
+  const handleLoadSnapshot = useCallback(
+    (topoData: unknown, rawText: string | null) => {
+      try {
+        const parsed = topoData as OSPFTopology
+        if (!parsed?.routers) throw new Error("Invalid topology data")
+        const { width, height } = canvasSizeRef.current
+        const graph = buildGraph(parsed, layout, width, height, spacingMultiplier)
+        setTopology(parsed)
+        setNodes(graph.nodes)
+        setEdges(graph.edges)
+        if (rawText) setInputText(rawText)
+        setSelectedNodeId(null)
+        setSelectedEdgeId(null)
+        setFilterArea(null)
+        setFilterLinkType(null)
+        setViewFilter("all")
+        setEvents([])
+        autoFitView(graph.nodes)
+        setLeftTab("input")
+      } catch {
+        toast.error("Failed to restore snapshot topology")
+      }
+    },
+    [layout, spacingMultiplier, autoFitView]
+  )
 
   // ── Layout change ──
   const handleLayoutChange = useCallback(
@@ -395,24 +467,60 @@ export default function Page() {
       <AppHeader pollingState={pollingState} />
 
       <div className="flex flex-1 overflow-hidden">
-        {/* Left panel - Input */}
+        {/* Left panel - Input / Snapshots */}
         <div
           className={`flex flex-col border-r border-border bg-card transition-all duration-200 ${
             showLeftPanel ? "w-80" : "w-0"
           } overflow-hidden shrink-0`}
         >
           {showLeftPanel && (
-            <ScrollArea className="flex-1">
-              <InputPanel
-                value={inputText}
-                onChange={setInputText}
-                onParse={handleParse}
-                onClear={handleClear}
-                onSSHData={handleSSHData}
-                isParsing={isParsing}
-                parseError={parseError}
-              />
-            </ScrollArea>
+            <>
+              {/* Tab switcher */}
+              <div className="flex border-b border-border shrink-0">
+                <button
+                  onClick={() => setLeftTab("input")}
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium transition-colors ${
+                    leftTab === "input"
+                      ? "text-foreground border-b-2 border-primary bg-card"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  Input
+                </button>
+                <button
+                  onClick={() => setLeftTab("snapshots")}
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium transition-colors ${
+                    leftTab === "snapshots"
+                      ? "text-foreground border-b-2 border-primary bg-card"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <Database className="w-3.5 h-3.5" />
+                  Snapshots
+                </button>
+              </div>
+
+              {leftTab === "input" ? (
+                <ScrollArea className="flex-1">
+                  <InputPanel
+                    value={inputText}
+                    onChange={setInputText}
+                    onParse={handleParse}
+                    onClear={handleClear}
+                    onSSHData={handleSSHData}
+                    isParsing={isParsing}
+                    parseError={parseError}
+                  />
+                </ScrollArea>
+              ) : (
+                <SnapshotsPanel
+                  onLoadSnapshot={handleLoadSnapshot}
+                  onSaveSnapshot={handleSaveSnapshot}
+                  isSaving={isSaving}
+                />
+              )}
+            </>
           )}
         </div>
 
