@@ -1,6 +1,6 @@
 "use client"
 
-import type { GraphNode, GraphEdge, OSPFRouter, OSPFNetwork } from "@/lib/ospf-types"
+import type { GraphNode, GraphEdge, OSPFRouter, OSPFNetwork, OSPFInterface } from "@/lib/ospf-types"
 import { getAreaColor } from "@/lib/layout-engine"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { X, Router, Network, ArrowRightLeft } from "lucide-react"
@@ -17,6 +17,12 @@ const ROLE_LABELS: Record<string, string> = {
   asbr: "AS Boundary Router (ASBR)",
 }
 
+const LINK_TYPE_COLORS: Record<string, string> = {
+  "point-to-point": "#38bdf8",
+  transit: "#a78bfa",
+  stub: "#94a3b8",
+}
+
 interface DetailsPanelProps {
   selectedNode: GraphNode | null
   selectedEdge: GraphEdge | null
@@ -29,6 +35,29 @@ function DetailRow({ label, value, mono }: { label: string; value: string | numb
     <div className="flex justify-between items-start gap-2 py-1.5 border-b border-border/50 last:border-b-0">
       <span className="text-xs text-muted-foreground shrink-0">{label}</span>
       <span className={`text-xs text-foreground text-right ${mono ? "font-mono" : ""}`}>{value}</span>
+    </div>
+  )
+}
+
+function InterfaceRow({ iface }: { iface: OSPFInterface }) {
+  const typeColor = LINK_TYPE_COLORS[iface.linkType] ?? "#94a3b8"
+  return (
+    <div className="flex flex-col gap-0.5 bg-secondary/40 rounded-md px-2.5 py-2 border border-border/30">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-mono text-xs font-semibold text-foreground">{iface.address}</span>
+        <span
+          className="text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider"
+          style={{ backgroundColor: typeColor + "20", color: typeColor }}
+        >
+          {iface.linkType === "point-to-point" ? "P2P" : iface.linkType}
+        </span>
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] text-muted-foreground font-mono truncate">{iface.connectedTo}</span>
+        {iface.cost > 0 && (
+          <span className="text-[10px] text-muted-foreground font-mono shrink-0">cost {iface.cost}</span>
+        )}
+      </div>
     </div>
   )
 }
@@ -127,6 +156,20 @@ export function DetailsPanel({ selectedNode, selectedEdge, nodes, onClose }: Det
                       >
                         {type}
                       </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* ── Interfaces ── */}
+              {(data as OSPFRouter).interfaces?.length > 0 && (
+                <div className="mt-3">
+                  <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+                    Interfaces ({(data as OSPFRouter).interfaces.length})
+                  </h4>
+                  <div className="flex flex-col gap-1.5">
+                    {(data as OSPFRouter).interfaces.map((iface, idx) => (
+                      <InterfaceRow key={`${iface.address}-${idx}`} iface={iface} />
                     ))}
                   </div>
                 </div>

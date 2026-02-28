@@ -8,6 +8,7 @@ import { SnapshotsPanel } from "@/components/snapshots-panel"
 import { TopologyCanvas } from "@/components/topology-canvas"
 import { ControlPanel } from "@/components/control-panel"
 import { DetailsPanel } from "@/components/details-panel"
+import { RouterTable } from "@/components/router-table"
 import { EmptyState } from "@/components/empty-state"
 import { TopologySearch } from "@/components/topology-search"
 import { parseOSPFData } from "@/lib/ospf-parser"
@@ -30,6 +31,8 @@ import {
   ChevronRight,
   FileText,
   Database,
+  List,
+  ArrowRightLeft,
 } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
@@ -64,6 +67,9 @@ export default function Page() {
   // ── Left panel tab ──
   const [leftTab, setLeftTab] = useState<"input" | "snapshots">("input")
   const [isSaving, setIsSaving] = useState(false)
+
+  // ── Right panel tab ──
+  const [rightTab, setRightTab] = useState<"details" | "routers">("details")
   const [events, setEvents] = useState<TopologyChange[]>([])
   const canvasSizeRef = useRef({ width: 900, height: 600 })
 
@@ -625,64 +631,104 @@ export default function Page() {
           )}
         </button>
 
-        {/* Right panel - Controls + Details */}
+        {/* Right panel - Controls + Details + Router Table */}
         <div
           className={`flex border-l border-border bg-card transition-all duration-200 ${
             showRightPanel ? "w-72" : "w-0"
           } overflow-hidden shrink-0`}
         >
           {showRightPanel && (
-            <div className="flex flex-col w-72">
-              {(selectedNode || selectedEdge) && (
-                <div className="border-b border-border h-[300px] shrink-0">
-                  <DetailsPanel
-                    selectedNode={selectedNode}
-                    selectedEdge={selectedEdge}
-                    nodes={filteredNodes}
-                    onClose={() => { setSelectedNodeId(null); setSelectedEdgeId(null) }}
-                  />
-                </div>
-              )}
-              <ScrollArea className="flex-1">
-                <ControlPanel
-                  layout={layout}
-                  showLabels={showLabels}
-                  showMetrics={showMetrics}
-                  colorBy={colorBy}
-                  areas={areas}
-                  filterArea={filterArea}
-                  filterLinkType={filterLinkType}
-                  onLayoutChange={handleLayoutChange}
-                  onShowLabelsChange={setShowLabels}
-                  onShowMetricsChange={setShowMetrics}
-                  onColorByChange={setColorBy}
-                  onFilterAreaChange={setFilterArea}
-                  onFilterLinkTypeChange={setFilterLinkType}
-                  onExportPNG={() => {
-                    const canvas = document.querySelector("canvas")
-                    if (!canvas) return
-                    const link = document.createElement("a")
-                    link.download = `ospf-topology-${Date.now()}.png`
-                    link.href = canvas.toDataURL("image/png")
-                    link.click()
-                  }}
-                  onResetView={() => autoFitView(nodes)}
-                  nodeCount={filteredNodes.length}
-                  edgeCount={filteredEdges.length}
-                  pollingState={pollingState}
-                  onStartPolling={startPolling}
-                  onStopPolling={stopPolling}
-                  onSetPollingInterval={setPollingInterval}
-                  events={events}
+            <div className="flex flex-col w-72 h-full">
+              {/* Tab switcher */}
+              <div className="flex border-b border-border shrink-0">
+                <button
+                  onClick={() => setRightTab("details")}
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium transition-colors ${
+                    rightTab === "details"
+                      ? "text-foreground border-b-2 border-primary bg-card"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <ArrowRightLeft className="w-3.5 h-3.5" />
+                  Details
+                </button>
+                <button
+                  onClick={() => setRightTab("routers")}
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium transition-colors ${
+                    rightTab === "routers"
+                      ? "text-foreground border-b-2 border-primary bg-card"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <List className="w-3.5 h-3.5" />
+                  Routers
+                </button>
+              </div>
+
+              {rightTab === "routers" ? (
+                <RouterTable
                   nodes={filteredNodes}
-                  allNodes={nodes}
-                  allEdges={edges}
-                  spacingMultiplier={spacingMultiplier}
-                  onSpacingChange={handleSpacingChange}
-                  viewFilter={viewFilter}
-                  onViewFilterChange={setViewFilter}
+                  onSelectNode={(id) => {
+                    setSelectedNodeId(id)
+                    setRightTab("details")
+                    // Also focus/zoom to the node
+                    handleFocusNode(id)
+                  }}
                 />
-              </ScrollArea>
+              ) : (
+                <>
+                  {(selectedNode || selectedEdge) && (
+                    <div className="border-b border-border h-[300px] shrink-0">
+                      <DetailsPanel
+                        selectedNode={selectedNode}
+                        selectedEdge={selectedEdge}
+                        nodes={filteredNodes}
+                        onClose={() => { setSelectedNodeId(null); setSelectedEdgeId(null) }}
+                      />
+                    </div>
+                  )}
+                  <ScrollArea className="flex-1">
+                    <ControlPanel
+                      layout={layout}
+                      showLabels={showLabels}
+                      showMetrics={showMetrics}
+                      colorBy={colorBy}
+                      areas={areas}
+                      filterArea={filterArea}
+                      filterLinkType={filterLinkType}
+                      onLayoutChange={handleLayoutChange}
+                      onShowLabelsChange={setShowLabels}
+                      onShowMetricsChange={setShowMetrics}
+                      onColorByChange={setColorBy}
+                      onFilterAreaChange={setFilterArea}
+                      onFilterLinkTypeChange={setFilterLinkType}
+                      onExportPNG={() => {
+                        const canvas = document.querySelector("canvas")
+                        if (!canvas) return
+                        const link = document.createElement("a")
+                        link.download = `ospf-topology-${Date.now()}.png`
+                        link.href = canvas.toDataURL("image/png")
+                        link.click()
+                      }}
+                      onResetView={() => autoFitView(nodes)}
+                      nodeCount={filteredNodes.length}
+                      edgeCount={filteredEdges.length}
+                      pollingState={pollingState}
+                      onStartPolling={startPolling}
+                      onStopPolling={stopPolling}
+                      onSetPollingInterval={setPollingInterval}
+                      events={events}
+                      nodes={filteredNodes}
+                      allNodes={nodes}
+                      allEdges={edges}
+                      spacingMultiplier={spacingMultiplier}
+                      onSpacingChange={handleSpacingChange}
+                      viewFilter={viewFilter}
+                      onViewFilterChange={setViewFilter}
+                    />
+                  </ScrollArea>
+                </>
+              )}
             </div>
           )}
         </div>

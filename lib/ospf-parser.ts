@@ -3,6 +3,7 @@ import type {
   OSPFRouter,
   OSPFNetwork,
   OSPFLink,
+  OSPFInterface,
   RouterRole,
 } from "./ospf-types"
 
@@ -37,6 +38,7 @@ export function parseOSPFData(input: string): OSPFTopology {
         lsaTypes: [],
         neighbors: [],
         neighborInterfaces: {},
+        interfaces: [],
         networks: [],
         stubNetworks: [],
       })
@@ -63,6 +65,7 @@ export function parseOSPFData(input: string): OSPFTopology {
         lsaTypes: ["Router LSA (Type 1)"],
         neighbors: [],
         neighborInterfaces: {},
+        interfaces: [],
         networks: [],
         stubNetworks: [],
         sequenceNumber: lsa.seqNumber,
@@ -86,50 +89,36 @@ export function parseOSPFData(input: string): OSPFTopology {
 
     for (const link of lsa.links) {
       if (link.type === "point-to-point") {
-        // Record neighbor
-        if (!router.neighbors.includes(link.linkId)) {
-          router.neighbors.push(link.linkId)
-        }
-        // Record interface used to reach this neighbor
+        if (!router.neighbors.includes(link.linkId)) router.neighbors.push(link.linkId)
         if (link.linkData && !router.neighborInterfaces[link.linkId]) {
           router.neighborInterfaces[link.linkId] = link.linkData
         }
-        // Accumulate costs from both sides
+        // Record interface
+        if (link.linkData && !router.interfaces.some(i => i.address === link.linkData && i.connectedTo === link.linkId)) {
+          router.interfaces.push({ address: link.linkData, connectedTo: link.linkId, linkType: "point-to-point", cost: link.metric })
+        }
         const key = [rid, link.linkId].sort().join("|")
         const existing = p2pCosts.get(key)
         if (existing) {
-          if (rid === existing.srcId) {
-            existing.srcCost = link.metric
-            if (link.linkData) existing.ifInfo = link.linkData
-          } else {
-            existing.tgtCost = link.metric
-          }
+          if (rid === existing.srcId) { existing.srcCost = link.metric; if (link.linkData) existing.ifInfo = link.linkData }
+          else existing.tgtCost = link.metric
         } else {
-          p2pCosts.set(key, {
-            srcId: rid,
-            tgtId: link.linkId,
-            srcCost: link.metric,
-            tgtCost: link.metric,
-            ifInfo: link.linkData,
-            area: lsa.area,
-          })
+          p2pCosts.set(key, { srcId: rid, tgtId: link.linkId, srcCost: link.metric, tgtCost: link.metric, ifInfo: link.linkData, area: lsa.area })
         }
       } else if (link.type === "stub") {
-        // Store stub network as "network/mask" string
-        const stubLabel = link.linkData
-          ? `${link.linkId}/${link.linkData}`
-          : link.linkId
-        if (!router.stubNetworks.includes(stubLabel)) {
-          router.stubNetworks.push(stubLabel)
-        }
-        // Also track stub network ID so links can be built
+        const stubLabel = link.linkData ? `${link.linkId}/${link.linkData}` : link.linkId
+        if (!router.stubNetworks.includes(stubLabel)) router.stubNetworks.push(stubLabel)
         const netId = `stub-${link.linkId}-${link.linkData}`
-        if (!router.networks.includes(netId)) {
-          router.networks.push(netId)
+        if (!router.networks.includes(netId)) router.networks.push(netId)
+        // Record interface for stub (linkData is the network mask, linkId is the network address)
+        if (link.linkData && !router.interfaces.some(i => i.connectedTo === link.linkId && i.linkType === "stub")) {
+          router.interfaces.push({ address: link.linkData, connectedTo: link.linkId, linkType: "stub", cost: link.metric })
         }
       } else if (link.type === "transit") {
-        if (!router.networks.includes(link.linkId)) {
-          router.networks.push(link.linkId)
+        if (!router.networks.includes(link.linkId)) router.networks.push(link.linkId)
+        // linkData is the router's interface IP on the transit network
+        if (link.linkData && !router.interfaces.some(i => i.address === link.linkData && i.connectedTo === link.linkId)) {
+          router.interfaces.push({ address: link.linkData, connectedTo: link.linkId, linkType: "transit", cost: link.metric })
         }
       }
     }

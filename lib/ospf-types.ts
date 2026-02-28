@@ -12,16 +12,24 @@ export type LSAType =
 // View filter modes for the topology canvas
 export type ViewFilter = "all" | "cost-unbalanced" | "cost-balanced" | "abr" | "asbr" | "down"
 
+export interface OSPFInterface {
+  address: string       // interface IP (linkData)
+  connectedTo: string   // neighbor router ID or network address
+  linkType: "point-to-point" | "stub" | "transit"
+  cost: number
+}
+
 export interface OSPFRouter {
   id: string
   routerId: string
   role: RouterRole
   area: string
   lsaTypes: LSAType[]
-  neighbors: string[]         // P2P neighbor router IDs
-  neighborInterfaces: Record<string, string>  // neighborId → interface/link-data
-  networks: string[]          // transit network IDs this router connects to
-  stubNetworks: string[]      // stub network prefixes (e.g. "192.168.1.0/255.255.255.0")
+  neighbors: string[]
+  neighborInterfaces: Record<string, string>  // neighborId → interface IP
+  interfaces: OSPFInterface[]                  // all interfaces on this router
+  networks: string[]
+  stubNetworks: string[]
   sequenceNumber?: string
   age?: number
   checksum?: string
