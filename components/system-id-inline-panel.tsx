@@ -1,9 +1,9 @@
 "use client"
 
-import { useState, useMemo, useEffect } from "react"
+import { useState, useMemo, useEffect, useRef, useCallback } from "react"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { X, Trash2, Download, Upload, CheckCircle2 } from "lucide-react"
+import { X, Trash2, Download, Upload, CheckCircle2, Loader2 } from "lucide-react"
 import type { GraphNode } from "@/lib/ospf-types"
 
 interface SystemIdInlinePanelProps {
@@ -16,19 +16,68 @@ export function SystemIdInlinePanel({ nodes, systemIds, onSystemIdsChange }: Sys
   const [search, setSearch] = useState("")
   const [bulkMode, setBulkMode] = useState(false)
   const [bulkText, setBulkText] = useState("")
-  const [saved, setSaved] = useState(false)
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle")
+  const [localIds, setLocalIds] = useState<Record<string, string>>({})
+  const [loaded, setLoaded] = useState(false)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Local draft — syncs up on every change
-  const [localIds, setLocalIds] = useState<Record<string, string>>(() => ({ ...systemIds }))
-
-  // Sync from parent when topology changes
+  // Load all system IDs from DB on mount
   useEffect(() => {
-    setLocalIds({ ...systemIds })
-  }, [systemIds])
+    fetch("/api/system-ids")
+      .then((r) => r.json())
+      .then((data: Record<string, string>) => {
+        setLocalIds(data)
+        onSystemIdsChange(data)
+        setLoaded(true)
+      })
+      .catch(() => {
+        // Fallback to parent state if DB fails
+        setLocalIds({ ...systemIds })
+        setLoaded(true)
+      })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // When parent resets (e.g. load snapshot), sync down
+  useEffect(() => {
+    if (!loaded) return
+    setLocalIds((prev) => ({ ...prev, ...systemIds }))
+  }, [systemIds, loaded])
+
+  const persistToDb = useCallback(async (ids: Record<string, string>) => {
+    setSaveState("saving")
+    try {
+      await fetch("/api/system-ids", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ entries: ids }),
+      })
+      setSaveState("saved")
+      setTimeout(() => setSaveState("idle"), 2000)
+    } catch {
+      setSaveState("error")
+      setTimeout(() => setSaveState("idle"), 3000)
+    }
+  }, [])
+
+  const deleteFromDb = useCallback(async (routerId: string) => {
+    await fetch("/api/system-ids", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ routerId }),
+    })
+  }, [])
+
+  const clearAllFromDb = useCallback(async () => {
+    await fetch("/api/system-ids", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    })
+  }, [])
 
   const routerNodes = useMemo(() => nodes.filter((n) => n.type === "router"), [nodes])
 
-  // Manual entries not yet in topology (typed by user before parsing)
   const manualOnly = useMemo(() => {
     const topologyIds = new Set(routerNodes.map((n) => n.id))
     return Object.entries(localIds)
@@ -46,13 +95,25 @@ export function SystemIdInlinePanel({ nodes, systemIds, onSystemIdsChange }: Sys
     )
   }, [routerNodes, search, localIds])
 
-  const handleChange = (routerId: string, value: string) => {
-    const next = { ...localIds, [routerId]: value }
-    if (!value.trim()) delete next[routerId]
+  const handleChange = useCallback((routerId: string, value: string) => {
+    const next = { ...localIds }
+    if (!value.trim()) {
+      delete next[routerId]
+      deleteFromDb(routerId)
+    } else {
+      next[routerId] = value
+    }
     setLocalIds(next)
-    // Auto-save immediately
     onSystemIdsChange(next)
-  }
+
+    // Debounce save to DB — 600ms after last keystroke
+    if (value.trim()) {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+      debounceRef.current = setTimeout(() => {
+        persistToDb({ [routerId]: value.trim() })
+      }, 600)
+    }
+  }, [localIds, onSystemIdsChange, persistToDb, deleteFromDb])
 
   const handleBulkApply = () => {
     const updated = { ...localIds }
@@ -65,10 +126,9 @@ export function SystemIdInlinePanel({ nodes, systemIds, onSystemIdsChange }: Sys
     }
     setLocalIds(updated)
     onSystemIdsChange(updated)
+    persistToDb(updated)
     setBulkText("")
     setBulkMode(false)
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
   }
 
   const handleExport = () => {
@@ -77,13 +137,14 @@ export function SystemIdInlinePanel({ nodes, systemIds, onSystemIdsChange }: Sys
       .map(([k, v]) => `${k}=${v}`)
       .join("\n")
     navigator.clipboard.writeText(text)
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
+    setSaveState("saved")
+    setTimeout(() => setSaveState("idle"), 2000)
   }
 
-  const handleClearAll = () => {
+  const handleClearAll = async () => {
     setLocalIds({})
     onSystemIdsChange({})
+    await clearAllFromDb()
   }
 
   const namedCount = Object.values(localIds).filter(Boolean).length
@@ -96,23 +157,26 @@ export function SystemIdInlinePanel({ nodes, systemIds, onSystemIdsChange }: Sys
           <div>
             <p className="text-xs font-semibold text-foreground">System ID Mapping</p>
             <p className="text-[10px] text-muted-foreground mt-0.5">
-              {routerNodes.length > 0
-                ? `${namedCount} of ${routerNodes.length} routers named`
-                : `${namedCount} pre-mapped entries`}
+              {!loaded ? "Loading from database..." :
+                routerNodes.length > 0
+                  ? `${namedCount} of ${routerNodes.length} routers named`
+                  : `${namedCount} pre-mapped entries`}
             </p>
           </div>
-          <div className="flex items-center gap-1">
-            {saved && <CheckCircle2 className="w-3.5 h-3.5 text-green-400" />}
+          <div className="flex items-center gap-1.5">
+            {saveState === "saving" && <Loader2 className="w-3.5 h-3.5 text-muted-foreground animate-spin" />}
+            {saveState === "saved" && <CheckCircle2 className="w-3.5 h-3.5 text-green-400" />}
+            {saveState === "error" && <span className="text-[10px] text-destructive">Save failed</span>}
             <button
               onClick={() => setBulkMode(!bulkMode)}
-              title="Bulk input"
+              title="Bulk input (routerId=Name)"
               className="p-1 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"
             >
               <Upload className="w-3.5 h-3.5" />
             </button>
             <button
               onClick={handleExport}
-              title="Copy all as text"
+              title="Copy all to clipboard"
               className="p-1 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"
             >
               <Download className="w-3.5 h-3.5" />
@@ -129,14 +193,15 @@ export function SystemIdInlinePanel({ nodes, systemIds, onSystemIdsChange }: Sys
           </div>
         </div>
 
-        {/* Bulk input */}
+        {/* Bulk input textarea */}
         {bulkMode && (
           <div className="mt-2">
             <p className="text-[10px] text-muted-foreground mb-1.5">
-              One per line: <span className="font-mono text-foreground">routerId=SystemName</span>
+              One per line:{" "}
+              <span className="font-mono text-foreground">routerId=SystemName</span>
             </p>
             <textarea
-              className="w-full h-28 bg-background border border-border rounded-md text-xs font-mono p-2 text-foreground resize-none focus:outline-none focus:ring-1 focus:ring-primary"
+              className="w-full h-32 bg-background border border-border rounded-md text-xs font-mono p-2 text-foreground resize-none focus:outline-none focus:ring-1 focus:ring-primary"
               placeholder={"198.18.253.226=Core-Router-A\n203.143.61.35=Edge-Router-B"}
               value={bulkText}
               onChange={(e) => setBulkText(e.target.value)}
@@ -146,7 +211,7 @@ export function SystemIdInlinePanel({ nodes, systemIds, onSystemIdsChange }: Sys
                 onClick={handleBulkApply}
                 className="flex-1 h-7 text-xs font-medium bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
               >
-                Apply
+                Apply & Save
               </button>
               <button
                 onClick={() => { setBulkMode(false); setBulkText("") }}
@@ -162,7 +227,7 @@ export function SystemIdInlinePanel({ nodes, systemIds, onSystemIdsChange }: Sys
         {!bulkMode && (
           <Input
             className="h-7 text-xs mt-2"
-            placeholder={routerNodes.length > 0 ? "Search router ID or name..." : "Search by router ID..."}
+            placeholder={routerNodes.length > 0 ? "Search router ID or name..." : "Search pre-mapped IDs..."}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -171,49 +236,41 @@ export function SystemIdInlinePanel({ nodes, systemIds, onSystemIdsChange }: Sys
 
       <ScrollArea className="flex-1">
         <div className="flex flex-col gap-0 px-3 py-2">
-          {/* Manual-only entries (pre-typed before topology loaded) */}
+          {/* Pre-mapped entries with no topology match */}
           {manualOnly.length > 0 && (
             <>
               <p className="text-[9px] font-semibold uppercase tracking-widest text-muted-foreground px-1 pt-2 pb-1">
-                Pre-mapped (no topology yet)
+                Pre-mapped
               </p>
               {manualOnly.map((rid) => (
-                <ManualRow
+                <RouterRow
                   key={rid}
                   routerId={rid}
                   value={localIds[rid] ?? ""}
                   onChange={handleChange}
-                  manual
+                  highlight
                 />
               ))}
-              {routerNodes.length > 0 && (
-                <div className="h-px bg-border my-2" />
-              )}
+              {routerNodes.length > 0 && <div className="h-px bg-border my-2" />}
             </>
           )}
 
-          {/* No topology yet — free-form entry */}
-          {routerNodes.length === 0 && (
+          {/* No topology — free-form row */}
+          {routerNodes.length === 0 && loaded && (
             <div className="px-1 pt-2">
               <p className="text-[10px] text-muted-foreground mb-3 leading-relaxed">
-                No topology loaded yet. You can pre-map router IDs to system names — they will be applied automatically when you parse OSPF data.
+                No topology loaded. Enter router IDs below — they will be applied automatically when you parse OSPF data.
               </p>
-              <ManualRow
-                routerId=""
-                value=""
-                onChange={handleChange}
-                manual
-                placeholder="Enter router ID (e.g. 198.18.0.1)"
-              />
+              <FreeFormRow onAdd={handleChange} />
             </div>
           )}
 
-          {/* Topology-based rows */}
+          {/* Topology rows */}
           {filtered.length === 0 && routerNodes.length > 0 && (
             <p className="text-xs text-muted-foreground text-center py-6">No routers match</p>
           )}
           {filtered.map((node) => (
-            <ManualRow
+            <RouterRow
               key={node.id}
               routerId={node.id}
               value={localIds[node.id] ?? ""}
@@ -223,74 +280,32 @@ export function SystemIdInlinePanel({ nodes, systemIds, onSystemIdsChange }: Sys
         </div>
       </ScrollArea>
 
-      {/* Add new manual row when no topology */}
-      {routerNodes.length === 0 && (
-        <div className="px-3 py-2 border-t border-border shrink-0">
-          <p className="text-[9px] text-muted-foreground text-center">
-            Use Bulk Input to add many entries at once
-          </p>
+      {routerNodes.length === 0 && loaded && (
+        <div className="px-4 py-2 border-t border-border shrink-0 text-center">
+          <p className="text-[9px] text-muted-foreground">Saved to database automatically</p>
         </div>
       )}
     </div>
   )
 }
 
-function ManualRow({
+function RouterRow({
   routerId,
   value,
   onChange,
-  manual = false,
-  placeholder,
+  highlight = false,
 }: {
   routerId: string
   value: string
   onChange: (id: string, val: string) => void
-  manual?: boolean
-  placeholder?: string
+  highlight?: boolean
 }) {
-  const [localId, setLocalId] = useState(routerId)
-  const [localVal, setLocalVal] = useState(value)
-
-  const commit = () => {
-    if (manual && localId.trim()) {
-      onChange(localId.trim(), localVal)
-      if (!routerId) {
-        // reset for next entry
-        setLocalId("")
-        setLocalVal("")
-      }
-    } else if (!manual) {
-      onChange(routerId, localVal)
-    }
-  }
-
-  if (manual && !routerId) {
-    // Free-form add-new row
-    return (
-      <div className="flex items-center gap-2 py-1 group">
-        <Input
-          className="h-7 text-[11px] font-mono w-36 shrink-0"
-          placeholder={placeholder ?? "Router ID"}
-          value={localId}
-          onChange={(e) => setLocalId(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => e.key === "Enter" && commit()}
-        />
-        <Input
-          className="h-7 text-[11px] flex-1"
-          placeholder="System name"
-          value={localVal}
-          onChange={(e) => setLocalVal(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => e.key === "Enter" && commit()}
-        />
-      </div>
-    )
-  }
-
   return (
     <div className="flex items-center gap-2 py-1 group">
-      <span className={`font-mono text-[11px] w-36 shrink-0 truncate ${manual ? "text-amber-400" : "text-muted-foreground"}`} title={routerId}>
+      <span
+        className={`font-mono text-[11px] w-36 shrink-0 truncate ${highlight ? "text-amber-400" : "text-muted-foreground"}`}
+        title={routerId}
+      >
         {routerId}
       </span>
       <Input
@@ -307,6 +322,39 @@ function ManualRow({
           <X className="w-3 h-3" />
         </button>
       )}
+    </div>
+  )
+}
+
+function FreeFormRow({ onAdd }: { onAdd: (id: string, val: string) => void }) {
+  const [routerId, setRouterId] = useState("")
+  const [name, setName] = useState("")
+
+  const commit = () => {
+    if (routerId.trim() && name.trim()) {
+      onAdd(routerId.trim(), name.trim())
+      setRouterId("")
+      setName("")
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-2 py-1">
+      <Input
+        className="h-7 text-[11px] font-mono w-36 shrink-0"
+        placeholder="Router ID"
+        value={routerId}
+        onChange={(e) => setRouterId(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && commit()}
+      />
+      <Input
+        className="h-7 text-[11px] flex-1"
+        placeholder="System name"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && commit()}
+        onBlur={commit}
+      />
     </div>
   )
 }

@@ -75,6 +75,7 @@ export default function Page() {
   const [rightTab, setRightTab] = useState<"details" | "routers">("details")
 
   // ── System IDs (manually assigned names per router) ──
+  // Populated on mount by SystemIdInlinePanel fetching from DB
   const [systemIds, setSystemIds] = useState<Record<string, string>>({})
   const [showSystemIdManager, setShowSystemIdManager] = useState(false)
   const [events, setEvents] = useState<TopologyChange[]>([])
