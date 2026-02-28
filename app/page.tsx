@@ -9,6 +9,7 @@ import { TopologyCanvas } from "@/components/topology-canvas"
 import { ControlPanel } from "@/components/control-panel"
 import { DetailsPanel } from "@/components/details-panel"
 import { RouterTable } from "@/components/router-table"
+import { SystemIdManager } from "@/components/system-id-manager"
 import { EmptyState } from "@/components/empty-state"
 import { TopologySearch } from "@/components/topology-search"
 import { parseOSPFData } from "@/lib/ospf-parser"
@@ -33,6 +34,7 @@ import {
   Database,
   List,
   ArrowRightLeft,
+  Tag,
 } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
@@ -70,6 +72,10 @@ export default function Page() {
 
   // ── Right panel tab ──
   const [rightTab, setRightTab] = useState<"details" | "routers">("details")
+
+  // ── System IDs (manually assigned names per router) ──
+  const [systemIds, setSystemIds] = useState<Record<string, string>>({})
+  const [showSystemIdManager, setShowSystemIdManager] = useState(false)
   const [events, setEvents] = useState<TopologyChange[]>([])
   const canvasSizeRef = useRef({ width: 900, height: 600 })
 
@@ -582,15 +588,30 @@ export default function Page() {
 
         {/* Center - Canvas + Search */}
         <div className="flex-1 flex flex-col relative min-w-0">
-          {/* Search bar overlay */}
+          {/* Search bar + System ID button overlay */}
           {hasTopology && (
-            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 w-[420px]">
-              <TopologySearch
-                nodes={filteredNodes}
-                edges={filteredEdges}
-                onSelectNode={setSelectedNodeId}
-                onFocusNode={handleFocusNode}
-              />
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 w-[500px]">
+              <div className="flex-1">
+                <TopologySearch
+                  nodes={filteredNodes}
+                  edges={filteredEdges}
+                  onSelectNode={setSelectedNodeId}
+                  onFocusNode={handleFocusNode}
+                />
+              </div>
+              <button
+                onClick={() => setShowSystemIdManager(true)}
+                className="flex items-center gap-1.5 h-8 px-3 rounded-md bg-card/90 backdrop-blur-sm border border-border text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-secondary/80 transition-colors shadow-sm shrink-0"
+                title="Manage System IDs"
+              >
+                <Tag className="w-3.5 h-3.5" />
+                System IDs
+                {Object.keys(systemIds).length > 0 && (
+                  <span className="ml-0.5 bg-primary text-primary-foreground rounded-full px-1.5 py-0.5 text-[9px] font-bold leading-none">
+                    {Object.keys(systemIds).length}
+                  </span>
+                )}
+              </button>
             </div>
           )}
 
@@ -607,6 +628,7 @@ export default function Page() {
               zoom={zoom}
               panX={panX}
               panY={panY}
+              systemIds={systemIds}
               onSelectNode={setSelectedNodeId}
               onSelectEdge={setSelectedEdgeId}
               onZoomChange={setZoom}
@@ -683,6 +705,7 @@ export default function Page() {
                         selectedNode={selectedNode}
                         selectedEdge={selectedEdge}
                         nodes={filteredNodes}
+                        systemIds={systemIds}
                         onClose={() => { setSelectedNodeId(null); setSelectedEdgeId(null) }}
                       />
                     </div>
@@ -734,5 +757,15 @@ export default function Page() {
         </div>
       </div>
     </div>
+
+      {/* System ID Manager dialog */}
+      {showSystemIdManager && (
+        <SystemIdManager
+          nodes={nodes}
+          systemIds={systemIds}
+          onSystemIdsChange={setSystemIds}
+          onClose={() => setShowSystemIdManager(false)}
+        />
+      )}
   )
 }

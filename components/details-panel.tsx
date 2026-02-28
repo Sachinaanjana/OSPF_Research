@@ -27,6 +27,7 @@ interface DetailsPanelProps {
   selectedNode: GraphNode | null
   selectedEdge: GraphEdge | null
   nodes: GraphNode[]
+  systemIds?: Record<string, string>
   onClose: () => void
 }
 
@@ -62,7 +63,7 @@ function InterfaceRow({ iface }: { iface: OSPFInterface }) {
   )
 }
 
-export function DetailsPanel({ selectedNode, selectedEdge, nodes, onClose }: DetailsPanelProps) {
+export function DetailsPanel({ selectedNode, selectedEdge, nodes, systemIds = {}, onClose }: DetailsPanelProps) {
   if (!selectedNode && !selectedEdge) {
     return (
       <div className="flex flex-col items-center justify-center h-full p-6 text-center">
@@ -111,11 +112,19 @@ export function DetailsPanel({ selectedNode, selectedEdge, nodes, onClose }: Det
             <span className="font-mono text-sm font-medium" style={{ color }}>
               {selectedNode.label}
             </span>
+            {systemIds[selectedNode.id] && (
+              <div className="mt-1 font-mono text-xs font-semibold text-amber-400">
+                {systemIds[selectedNode.id]}
+              </div>
+            )}
           </div>
 
           {isRouter && (
             <div className="flex flex-col gap-0">
               <DetailRow label="Router ID" value={(data as OSPFRouter).routerId} mono />
+              {systemIds[selectedNode.id] && (
+                <DetailRow label="System ID" value={systemIds[selectedNode.id]} mono />
+              )}
               <div className="flex justify-between items-center gap-2 py-1.5 border-b border-border/50">
                 <span className="text-xs text-muted-foreground shrink-0">Role</span>
                 {(() => {
