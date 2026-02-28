@@ -293,7 +293,7 @@ export default function Page() {
 
   // ── Load snapshot from DB ──
   const handleLoadSnapshot = useCallback(
-    (topoData: unknown, rawText: string | null) => {
+    (topoData: unknown, rawText: string | null, _meta?: unknown) => {
       try {
         const parsed = topoData as OSPFTopology
         if (!parsed?.routers) throw new Error("Invalid topology data")
