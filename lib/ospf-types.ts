@@ -18,8 +18,10 @@ export interface OSPFRouter {
   role: RouterRole
   area: string
   lsaTypes: LSAType[]
-  neighbors: string[]
-  networks: string[]
+  neighbors: string[]         // P2P neighbor router IDs
+  neighborInterfaces: Record<string, string>  // neighborId → interface/link-data
+  networks: string[]          // transit network IDs this router connects to
+  stubNetworks: string[]      // stub network prefixes (e.g. "192.168.1.0/255.255.255.0")
   sequenceNumber?: string
   age?: number
   checksum?: string

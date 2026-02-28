@@ -135,10 +135,31 @@ export function DetailsPanel({ selectedNode, selectedEdge, nodes, onClose }: Det
               {(data as OSPFRouter).neighbors.length > 0 && (
                 <div className="mt-3">
                   <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-                    Neighbors
+                    Neighbors ({(data as OSPFRouter).neighbors.length})
                   </h4>
                   <div className="flex flex-col gap-1">
-                    {(data as OSPFRouter).neighbors.map((n) => (
+                    {(data as OSPFRouter).neighbors.map((n) => {
+                      const iface = (data as OSPFRouter).neighborInterfaces?.[n]
+                      return (
+                        <div key={n} className="flex items-center justify-between bg-secondary/50 rounded-sm px-2 py-1 gap-2">
+                          <span className="font-mono text-xs text-secondary-foreground">{n}</span>
+                          {iface && (
+                            <span className="font-mono text-[10px] text-muted-foreground shrink-0">{iface}</span>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {(data as OSPFRouter).stubNetworks?.length > 0 && (
+                <div className="mt-3">
+                  <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+                    Stub Networks ({(data as OSPFRouter).stubNetworks.length})
+                  </h4>
+                  <div className="flex flex-col gap-1">
+                    {(data as OSPFRouter).stubNetworks.map((n) => (
                       <span
                         key={n}
                         className="font-mono text-xs text-secondary-foreground bg-secondary/50 px-2 py-1 rounded-sm"
@@ -150,13 +171,13 @@ export function DetailsPanel({ selectedNode, selectedEdge, nodes, onClose }: Det
                 </div>
               )}
 
-              {(data as OSPFRouter).networks.length > 0 && (
+              {(data as OSPFRouter).networks.filter(n => !n.startsWith("stub-")).length > 0 && (
                 <div className="mt-3">
                   <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-                    Networks
+                    Transit Networks
                   </h4>
                   <div className="flex flex-col gap-1">
-                    {(data as OSPFRouter).networks.map((n) => (
+                    {(data as OSPFRouter).networks.filter(n => !n.startsWith("stub-")).map((n) => (
                       <span
                         key={n}
                         className="font-mono text-xs text-secondary-foreground bg-secondary/50 px-2 py-1 rounded-sm"
