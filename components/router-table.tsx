@@ -4,7 +4,7 @@ import { useState, useMemo } from "react"
 import type { GraphNode, OSPFRouter } from "@/lib/ospf-types"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Input } from "@/components/ui/input"
-import { Search, ChevronDown, ChevronRight } from "lucide-react"
+import { Search, ChevronDown, ChevronRight, Globe, MapPin } from "lucide-react"
 import { getAreaColor } from "@/lib/layout-engine"
 
 interface RouterTableProps {
@@ -113,10 +113,10 @@ export function RouterTable({ nodes, onSelectNode }: RouterTableProps) {
                   </span>
                 </div>
 
-                {/* Expanded interfaces */}
+                {/* Expanded details */}
                 {isExpanded && (
                   <div className="bg-secondary/20 border-t border-border/30 px-3 py-2">
-                    {/* System IDs */}
+                    {/* Meta */}
                     <div className="mb-2 flex flex-col gap-0.5">
                       <DetailLine label="Router ID" value={data.routerId} />
                       <DetailLine label="Area" value={`Area ${node.area}`} />
@@ -129,30 +129,36 @@ export function RouterTable({ nodes, onSelectNode }: RouterTableProps) {
                     {ifaceCount > 0 && (
                       <>
                         <p className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">
-                          Interfaces
+                          Interfaces ({ifaceCount})
                         </p>
                         <div className="flex flex-col gap-1">
                           {data.interfaces.map((iface, idx) => {
                             const typeColor = LINK_TYPE_COLORS[iface.linkType] ?? "#94a3b8"
                             return (
-                              <div
-                                key={idx}
-                                className="flex items-center gap-2 text-[10px] font-mono bg-background/60 rounded px-2 py-1"
-                              >
-                                <span
-                                  className="shrink-0 font-bold"
-                                  style={{ color: typeColor }}
-                                >
+                              <div key={idx} className="flex items-center gap-2 text-[10px] font-mono bg-background/60 rounded px-2 py-1">
+                                <span className="shrink-0 font-bold" style={{ color: typeColor }}>
                                   {iface.linkType === "point-to-point" ? "P2P" : iface.linkType.substring(0, 3).toUpperCase()}
                                 </span>
                                 <span className="text-foreground">{iface.address}</span>
                                 <span className="text-muted-foreground truncate flex-1">→ {iface.connectedTo}</span>
-                                {iface.cost > 0 && (
-                                  <span className="text-muted-foreground shrink-0">{iface.cost}</span>
-                                )}
+                                {iface.cost > 0 && <span className="text-muted-foreground shrink-0">cost {iface.cost}</span>}
                               </div>
                             )
                           })}
+                        </div>
+                      </>
+                    )}
+
+                    {/* Stub Networks */}
+                    {data.stubNetworks?.length > 0 && (
+                      <>
+                        <p className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5 mt-2">
+                          Stub Networks ({data.stubNetworks.length})
+                        </p>
+                        <div className="flex flex-col gap-0.5">
+                          {data.stubNetworks.map((n) => (
+                            <span key={n} className="font-mono text-[10px] bg-background/60 rounded px-2 py-0.5 text-muted-foreground">{n}</span>
+                          ))}
                         </div>
                       </>
                     )}
@@ -172,6 +178,43 @@ export function RouterTable({ nodes, onSelectNode }: RouterTableProps) {
                             >
                               {nb}
                             </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+
+                    {/* Summary Routes */}
+                    {data.summaryRoutes?.length > 0 && (
+                      <>
+                        <p className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5 mt-2 flex items-center gap-1">
+                          <MapPin className="w-2.5 h-2.5" /> Summary Routes ({data.summaryRoutes.length})
+                        </p>
+                        <div className="flex flex-col gap-0.5">
+                          {data.summaryRoutes.map((r, i) => (
+                            <div key={i} className="flex items-center justify-between font-mono text-[10px] bg-background/60 rounded px-2 py-0.5 gap-2">
+                              <span className="text-foreground">{r.network}{r.mask ? `/${r.mask}` : ""}</span>
+                              <span className="text-muted-foreground shrink-0">cost {r.cost}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+
+                    {/* External Routes */}
+                    {data.externalRoutes?.length > 0 && (
+                      <>
+                        <p className="text-[9px] font-semibold uppercase tracking-wider text-orange-400 mb-1.5 mt-2 flex items-center gap-1">
+                          <Globe className="w-2.5 h-2.5" /> External Routes ({data.externalRoutes.length})
+                        </p>
+                        <div className="flex flex-col gap-0.5">
+                          {data.externalRoutes.map((r, i) => (
+                            <div key={i} className="flex items-center justify-between font-mono text-[10px] bg-background/60 rounded px-2 py-0.5 gap-2">
+                              <span className="text-foreground">{r.network}{r.mask ? `/${r.mask}` : ""}</span>
+                              <div className="flex items-center gap-1 shrink-0">
+                                <span className="text-orange-400 font-bold">E{r.metricType}</span>
+                                <span className="text-muted-foreground">{r.metric}</span>
+                              </div>
+                            </div>
                           ))}
                         </div>
                       </>

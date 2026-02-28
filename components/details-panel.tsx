@@ -1,9 +1,9 @@
 "use client"
 
-import type { GraphNode, GraphEdge, OSPFRouter, OSPFNetwork, OSPFInterface } from "@/lib/ospf-types"
+import type { GraphNode, GraphEdge, OSPFRouter, OSPFNetwork, OSPFInterface, OSPFSummaryRoute, OSPFExternalRoute } from "@/lib/ospf-types"
 import { getAreaColor } from "@/lib/layout-engine"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { X, Router, Network, ArrowRightLeft } from "lucide-react"
+import { X, Router, Network, ArrowRightLeft, Globe, MapPin, ExternalLink } from "lucide-react"
 
 const ROLE_COLORS: Record<string, string> = {
   internal: "#2dd4a0",
@@ -59,6 +59,52 @@ function InterfaceRow({ iface }: { iface: OSPFInterface }) {
           <span className="text-[10px] text-muted-foreground font-mono shrink-0">cost {iface.cost}</span>
         )}
       </div>
+    </div>
+  )
+}
+
+function SummaryRouteRow({ route }: { route: OSPFSummaryRoute }) {
+  const isABSR = route.lsaType === "ASBR Summary LSA (Type 4)"
+  const color = isABSR ? "#f97316" : "#a78bfa"
+  return (
+    <div className="flex flex-col gap-0.5 bg-secondary/40 rounded-md px-2.5 py-2 border border-border/30">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-mono text-xs font-semibold text-foreground">
+          {route.network}{route.mask ? `/${route.mask}` : ""}
+        </span>
+        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider"
+          style={{ backgroundColor: color + "20", color }}>
+          {isABSR ? "Type 4" : "Type 3"}
+        </span>
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] text-muted-foreground font-mono">via {route.advertisingRouter}</span>
+        <span className="text-[10px] text-muted-foreground font-mono shrink-0">cost {route.cost}</span>
+      </div>
+    </div>
+  )
+}
+
+function ExternalRouteRow({ route }: { route: OSPFExternalRoute }) {
+  return (
+    <div className="flex flex-col gap-0.5 bg-secondary/40 rounded-md px-2.5 py-2 border border-border/30">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-mono text-xs font-semibold text-foreground">
+          {route.network}{route.mask ? `/${route.mask}` : ""}
+        </span>
+        <div className="flex items-center gap-1">
+          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider bg-orange-500/20 text-orange-400">
+            E{route.metricType}
+          </span>
+          <span className="text-[10px] font-mono text-muted-foreground">metric {route.metric}</span>
+        </div>
+      </div>
+      {route.forwardingAddress && route.forwardingAddress !== "0.0.0.0" && (
+        <span className="text-[10px] text-muted-foreground font-mono">fwd {route.forwardingAddress}</span>
+      )}
+      {route.tag > 0 && (
+        <span className="text-[10px] text-muted-foreground font-mono">tag {route.tag}</span>
+      )}
     </div>
   )
 }
@@ -230,12 +276,37 @@ export function DetailsPanel({ selectedNode, selectedEdge, nodes, systemIds = {}
                   </h4>
                   <div className="flex flex-col gap-1">
                     {(data as OSPFRouter).networks.filter(n => !n.startsWith("stub-")).map((n) => (
-                      <span
-                        key={n}
-                        className="font-mono text-xs text-secondary-foreground bg-secondary/50 px-2 py-1 rounded-sm"
-                      >
-                        {n}
-                      </span>
+                      <span key={n} className="font-mono text-xs text-secondary-foreground bg-secondary/50 px-2 py-1 rounded-sm">{n}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Summary Routes (Type 3 / Type 4) */}
+              {(data as OSPFRouter).summaryRoutes?.length > 0 && (
+                <div className="mt-3">
+                  <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-1.5">
+                    <MapPin className="w-3 h-3" />
+                    Summary Routes ({(data as OSPFRouter).summaryRoutes.length})
+                  </h4>
+                  <div className="flex flex-col gap-1.5">
+                    {(data as OSPFRouter).summaryRoutes.map((r, i) => (
+                      <SummaryRouteRow key={i} route={r} />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* External Routes (Type 5) */}
+              {(data as OSPFRouter).externalRoutes?.length > 0 && (
+                <div className="mt-3">
+                  <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-1.5">
+                    <Globe className="w-3 h-3 text-orange-400" />
+                    External Routes ({(data as OSPFRouter).externalRoutes.length})
+                  </h4>
+                  <div className="flex flex-col gap-1.5">
+                    {(data as OSPFRouter).externalRoutes.map((r, i) => (
+                      <ExternalRouteRow key={i} route={r} />
                     ))}
                   </div>
                 </div>

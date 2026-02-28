@@ -13,10 +13,33 @@ export type LSAType =
 export type ViewFilter = "all" | "cost-unbalanced" | "cost-balanced" | "abr" | "asbr" | "down"
 
 export interface OSPFInterface {
-  address: string       // interface IP (linkData)
-  connectedTo: string   // neighbor router ID or network address
+  address: string
+  connectedTo: string
   linkType: "point-to-point" | "stub" | "transit"
   cost: number
+}
+
+export interface OSPFSummaryRoute {
+  network: string      // destination prefix
+  mask: string
+  cost: number
+  area: string         // area this summary came from
+  lsaType: "Summary LSA (Type 3)" | "ASBR Summary LSA (Type 4)"
+  advertisingRouter: string
+  seqNumber?: string
+  age?: number
+}
+
+export interface OSPFExternalRoute {
+  network: string      // destination prefix
+  mask: string
+  metric: number
+  metricType: 1 | 2    // E1 or E2
+  tag: number
+  forwardingAddress: string
+  advertisingRouter: string
+  seqNumber?: string
+  age?: number
 }
 
 export interface OSPFRouter {
@@ -26,10 +49,12 @@ export interface OSPFRouter {
   area: string
   lsaTypes: LSAType[]
   neighbors: string[]
-  neighborInterfaces: Record<string, string>  // neighborId → interface IP
-  interfaces: OSPFInterface[]                  // all interfaces on this router
+  neighborInterfaces: Record<string, string>
+  interfaces: OSPFInterface[]
   networks: string[]
   stubNetworks: string[]
+  summaryRoutes: OSPFSummaryRoute[]       // Type 3 + Type 4 LSAs originated by this router
+  externalRoutes: OSPFExternalRoute[]     // Type 5 LSAs originated by this router (ASBR)
   sequenceNumber?: string
   age?: number
   checksum?: string
@@ -61,6 +86,8 @@ export interface OSPFTopology {
   networks: OSPFNetwork[]
   links: OSPFLink[]
   areas: string[]
+  summaryRoutes: OSPFSummaryRoute[]    // all Type 3 / Type 4 LSAs
+  externalRoutes: OSPFExternalRoute[]  // all Type 5 LSAs
 }
 
 export interface GraphNode {

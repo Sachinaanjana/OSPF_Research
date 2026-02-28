@@ -4,6 +4,8 @@ import type {
   OSPFNetwork,
   OSPFLink,
   OSPFInterface,
+  OSPFSummaryRoute,
+  OSPFExternalRoute,
   RouterRole,
 } from "./ospf-types"
 
@@ -15,6 +17,8 @@ export function parseOSPFData(input: string): OSPFTopology {
   const lines = input.split("\n")
   const routerLSAs = parseRouterLSAs(lines)
   const networkLSAs = parseNetworkLSAs(lines)
+  const summaryLSAs = parseSummaryLSAs(lines)       // Type 3 + Type 4
+  const externalLSAs = parseExternalLSAs(lines)     // Type 5
 
   const routerMap = new Map<string, OSPFRouter>()
   const networkMap = new Map<string, OSPFNetwork>()
@@ -41,6 +45,8 @@ export function parseOSPFData(input: string): OSPFTopology {
         interfaces: [],
         networks: [],
         stubNetworks: [],
+        summaryRoutes: [],
+        externalRoutes: [],
       })
     }
     return routerMap.get(rid)!
@@ -68,6 +74,8 @@ export function parseOSPFData(input: string): OSPFTopology {
         interfaces: [],
         networks: [],
         stubNetworks: [],
+        summaryRoutes: [],
+        externalRoutes: [],
         sequenceNumber: lsa.seqNumber,
         age: lsa.age,
         checksum: lsa.checksum,
@@ -195,11 +203,26 @@ export function parseOSPFData(input: string): OSPFTopology {
   for (const router of Array.from(routerMap.values())) {
     for (const neighborId of router.neighbors) {
       const nb = ensureRouter(neighborId, router.area)
-      // Add reverse neighbor reference
       if (!nb.neighbors.includes(router.id)) {
         nb.neighbors.push(router.id)
       }
     }
+  }
+
+  // ── Attach Summary LSAs (Type 3 / Type 4) to advertising routers ──
+  for (const s of summaryLSAs) {
+    const router = ensureRouter(s.advertisingRouter, s.area)
+    if (!router.lsaTypes.includes(s.lsaType)) router.lsaTypes.push(s.lsaType)
+    if (s.lsaType === "ASBR Summary LSA (Type 4)" && router.role === "internal") router.role = "abr"
+    router.summaryRoutes.push(s)
+  }
+
+  // ── Attach External LSAs (Type 5) to advertising routers (ASBRs) ──
+  for (const e of externalLSAs) {
+    const router = ensureRouter(e.advertisingRouter, "0")
+    if (!router.lsaTypes.includes("AS External LSA (Type 5)")) router.lsaTypes.push("AS External LSA (Type 5)")
+    if (router.role === "internal") router.role = "asbr"
+    router.externalRoutes.push(e)
   }
 
   return {
@@ -207,10 +230,12 @@ export function parseOSPFData(input: string): OSPFTopology {
     networks: Array.from(networkMap.values()),
     links: dedup(links),
     areas: Array.from(areas).sort(),
+    summaryRoutes: summaryLSAs,
+    externalRoutes: externalLSAs,
   }
 }
 
-// ─── Internal types ──────────────────────────────────────────
+// ─── Internal types ���─────────────────────────────────────────
 
 interface RawRouterLSA {
   routerId: string
@@ -434,7 +459,124 @@ function splitLSABlocks(lines: string[]): LSABlock[] {
   return blocks
 }
 
-// ─── Helpers ────────────────────────────────────────────────
+// ─── Summary LSA parser (Type 3 + Type 4) ──────────────────
+
+function parseSummaryLSAs(lines: string[]): OSPFSummaryRoute[] {
+  const result: OSPFSummaryRoute[] = []
+  let currentArea = "0"
+  const blocks = splitLSABlocks(lines)
+
+  for (const block of blocks) {
+    if (block.isAreaHeader) { currentArea = block.area!; continue }
+
+    const isType3 = block.lines.some((l) => /LS Type:\s*Summary Links\s*\(Network\)/i.test(l))
+    const isType4 = block.lines.some((l) => /LS Type:\s*Summary Links\s*\(AS Boundary Router\)/i.test(l))
+    if (!isType3 && !isType4) continue
+
+    let network = ""
+    let mask = ""
+    let cost = 0
+    let advertisingRouter = ""
+    let seqNumber = ""
+    let age = 0
+
+    for (const line of block.lines) {
+      const t = line.trim()
+      const ageM = t.match(/^LS age:\s*(?:MAXAGE\()?(\d+)\)?/i)
+      if (ageM) { age = parseInt(ageM[1]); continue }
+      const lsidM = t.match(/^Link State ID:\s*([\d.]+)/i)
+      if (lsidM) { network = lsidM[1]; continue }
+      const advM = t.match(/^Advertising Router:\s*([\d.]+)/i)
+      if (advM) { advertisingRouter = advM[1]; continue }
+      const seqM = t.match(/^LS Seq Number:\s*(\S+)/i)
+      if (seqM) { seqNumber = seqM[1]; continue }
+      const maskM = t.match(/^Network Mask:\s*(\S+)/i)
+      if (maskM) { mask = maskM[1]; continue }
+      const metM = t.match(/TOS\s*:?\s*0\s+Metrics?:\s*(\d+)/i)
+      if (metM) { cost = parseInt(metM[1]); continue }
+      const metM2 = t.match(/^Metric:\s*(\d+)/i)
+      if (metM2 && cost === 0) { cost = parseInt(metM2[1]); continue }
+    }
+
+    if (network && advertisingRouter) {
+      result.push({
+        network,
+        mask,
+        cost,
+        area: currentArea,
+        lsaType: isType4 ? "ASBR Summary LSA (Type 4)" : "Summary LSA (Type 3)",
+        advertisingRouter,
+        seqNumber,
+        age,
+      })
+    }
+  }
+
+  return result
+}
+
+// ─── External LSA parser (Type 5) ──────────────────────────
+
+function parseExternalLSAs(lines: string[]): OSPFExternalRoute[] {
+  const result: OSPFExternalRoute[] = []
+  const blocks = splitLSABlocks(lines)
+
+  for (const block of blocks) {
+    if (block.isAreaHeader) continue
+    const isType5 = block.lines.some((l) => /LS Type:\s*AS External Link/i.test(l))
+    if (!isType5) continue
+
+    let network = ""
+    let mask = ""
+    let metric = 0
+    let metricType: 1 | 2 = 2
+    let tag = 0
+    let forwardingAddress = ""
+    let advertisingRouter = ""
+    let seqNumber = ""
+    let age = 0
+
+    for (const line of block.lines) {
+      const t = line.trim()
+      const ageM = t.match(/^LS age:\s*(?:MAXAGE\()?(\d+)\)?/i)
+      if (ageM) { age = parseInt(ageM[1]); continue }
+      const lsidM = t.match(/^Link State ID:\s*([\d.]+)/i)
+      if (lsidM) { network = lsidM[1]; continue }
+      const advM = t.match(/^Advertising Router:\s*([\d.]+)/i)
+      if (advM) { advertisingRouter = advM[1]; continue }
+      const seqM = t.match(/^LS Seq Number:\s*(\S+)/i)
+      if (seqM) { seqNumber = seqM[1]; continue }
+      const maskM = t.match(/^Network Mask:\s*(\S+)/i)
+      if (maskM) { mask = maskM[1]; continue }
+      const metTypeM = t.match(/Metric Type:\s*(\d+)/i)
+      if (metTypeM) { metricType = parseInt(metTypeM[1]) === 1 ? 1 : 2; continue }
+      const metM = t.match(/TOS\s*:?\s*0\s+Metrics?:\s*(\d+)/i)
+      if (metM) { metric = parseInt(metM[1]); continue }
+      const metM2 = t.match(/^Metric:\s*(\d+)/i)
+      if (metM2 && metric === 0) { metric = parseInt(metM2[1]); continue }
+      const fwdM = t.match(/Forwarding\s+Address:\s*([\d.]+)/i)
+      if (fwdM) { forwardingAddress = fwdM[1]; continue }
+      const tagM = t.match(/External\s+Route\s+Tag:\s*(\d+)/i)
+      if (tagM) { tag = parseInt(tagM[1]); continue }
+    }
+
+    if (network && advertisingRouter) {
+      result.push({
+        network,
+        mask,
+        metric,
+        metricType,
+        tag,
+        forwardingAddress,
+        advertisingRouter,
+        seqNumber,
+        age,
+      })
+    }
+  }
+
+  return result
+}
 
 function dedup(links: OSPFLink[]): OSPFLink[] {
   const seen = new Map<string, OSPFLink>()
