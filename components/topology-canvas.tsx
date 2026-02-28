@@ -904,12 +904,21 @@ export function TopologyCanvas({
         </button>
       </div>
       {/* Node/edge count indicator */}
-      <div className="absolute top-3 left-3 text-[10px] font-mono text-muted-foreground bg-background/80 backdrop-blur-sm rounded px-2 py-1 border border-border">
-        {localNodes.length} nodes / {edges.length} edges
-        {detailLevel !== "detailed" && (
-          <span className="ml-1 text-accent">({detailLevel} mode)</span>
-        )}
-      </div>
+      {localNodes.length > 0 && (
+        <div className="absolute top-3 left-3 flex items-center gap-1.5 text-[10px] font-mono bg-background/90 backdrop-blur-sm rounded-md px-2.5 py-1.5 border border-border shadow-sm">
+          <span className="text-primary font-semibold">{localNodes.filter(n => n.type === "router").length}</span>
+          <span className="text-muted-foreground">routers</span>
+          <span className="text-border">|</span>
+          <span className="text-blue-400 font-semibold">{localNodes.filter(n => n.type === "network").length}</span>
+          <span className="text-muted-foreground">networks</span>
+          <span className="text-border">|</span>
+          <span className="text-muted-foreground font-semibold">{edges.length}</span>
+          <span className="text-muted-foreground">links</span>
+          {detailLevel !== "detailed" && (
+            <span className="ml-1 text-yellow-400 border-l border-border pl-1.5">{detailLevel}</span>
+          )}
+        </div>
+      )}
       {/* Empty state */}
       {localNodes.length === 0 && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
