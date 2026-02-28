@@ -18,9 +18,12 @@ export function getAreaColor(area: string): string {
   return `hsl(${hue}, 65%, 55%)`
 }
 
-function computeLayoutSize(nodeCount: number, baseWidth: number, baseHeight: number) {
+function computeLayoutSize(nodeCount: number, baseWidth: number, baseHeight: number, spacingMultiplier = 1) {
+  // Base spacing per node — scales down for very large graphs, multiplied by user control
+  const baseSpacing = nodeCount > 200 ? 110 : nodeCount > 100 ? 130 : 160
+  const spacingPerNode = baseSpacing * spacingMultiplier
   const minArea = baseWidth * baseHeight
-  const desiredArea = Math.max(minArea, nodeCount * 150 * 150)
+  const desiredArea = Math.max(minArea, nodeCount * spacingPerNode * spacingPerNode)
   const aspect = baseWidth / baseHeight
   const h = Math.sqrt(desiredArea / aspect)
   const w = h * aspect
@@ -31,7 +34,8 @@ export function buildGraph(
   topology: OSPFTopology,
   layout: LayoutAlgorithm,
   viewportWidth: number,
-  viewportHeight: number
+  viewportHeight: number,
+  spacingMultiplier = 1,
 ): { nodes: GraphNode[]; edges: GraphEdge[] } {
   const nodes: GraphNode[] = []
   const edges: GraphEdge[] = []
@@ -75,7 +79,7 @@ export function buildGraph(
     })
   }
 
-  const { width, height } = computeLayoutSize(nodes.length, viewportWidth, viewportHeight)
+  const { width, height } = computeLayoutSize(nodes.length, viewportWidth, viewportHeight, spacingMultiplier)
   applyLayout(nodes, edges, layout, width, height)
   return { nodes, edges }
 }
@@ -87,7 +91,8 @@ export function computeAutoFit(
 ): { zoom: number; panX: number; panY: number } {
   if (nodes.length === 0) return { zoom: 1, panX: 0, panY: 0 }
 
-  const padding = 80
+  // Larger padding for small graphs, tighter for large ones
+  const padding = nodes.length > 100 ? 40 : 80
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
   for (const n of nodes) {
     if (n.x < minX) minX = n.x
@@ -100,12 +105,13 @@ export function computeAutoFit(
   const contentH = maxY - minY + padding * 2
   if (contentW <= 0 || contentH <= 0) return { zoom: 1, panX: 0, panY: 0 }
 
-  const zoom = Math.min(viewportWidth / contentW, viewportHeight / contentH, 1.5)
+  // Allow zoom-out further for large graphs (no 1.5 max cap)
+  const zoom = Math.min(viewportWidth / contentW, viewportHeight / contentH)
   const centerX = (minX + maxX) / 2
   const centerY = (minY + maxY) / 2
   const panX = viewportWidth / 2 - centerX * zoom
   const panY = viewportHeight / 2 - centerY * zoom
-  return { zoom: Math.max(0.05, zoom), panX, panY }
+  return { zoom: Math.max(0.03, zoom), panX, panY }
 }
 
 function applyLayout(nodes: GraphNode[], edges: GraphEdge[], layout: LayoutAlgorithm, width: number, height: number) {
@@ -124,7 +130,8 @@ function forceDirectedLayout(nodes: GraphNode[], edges: GraphEdge[], width: numb
 
   const centerX = width / 2
   const centerY = height / 2
-  const nodeSpacing = Math.max(100, 600 / Math.sqrt(n))
+  // Ensure generous spacing — at 239 nodes sqrt(239) ≈ 15.5, giving ~77px minimum
+  const nodeSpacing = Math.max(75, 1200 / Math.sqrt(n))
 
   // Build ID -> index map for O(1) lookups
   const idxMap = new Map<string, number>()
@@ -174,12 +181,12 @@ function forceDirectedLayout(nodes: GraphNode[], edges: GraphEdge[], width: numb
   // Copy positions to typed arrays
   for (let i = 0; i < n; i++) { px[i] = nodes[i].x; py[i] = nodes[i].y }
 
-  const repulsion = Math.max(12000, n * 250)
+  const repulsion = Math.max(20000, n * 400)
   const attraction = 0.004
   const minDist = nodeSpacing * 0.5
 
-  // Adaptive iterations: fewer for very large graphs
-  const iterations = n > 200 ? 100 : n > 100 ? 140 : 200
+  // Adaptive iterations: more for large graphs to ensure convergence
+  const iterations = n > 200 ? 150 : n > 100 ? 180 : 220
   const damping = 0.88
 
   // For large graphs (100+), use grid-based spatial hashing for repulsion
@@ -316,8 +323,8 @@ function forceDirectedLayout(nodes: GraphNode[], edges: GraphEdge[], width: numb
     }
   }
 
-  // Post-process overlap resolution
-  resolveOverlaps(px, py, n, minDist, 8)
+  // Post-process overlap resolution — more passes for large graphs
+  resolveOverlaps(px, py, n, minDist, n > 100 ? 20 : 8)
 
   // Write back to nodes
   for (let i = 0; i < n; i++) {
@@ -370,8 +377,8 @@ function hierarchicalLayout(nodes: GraphNode[], _edges: GraphEdge[], width: numb
     return a.localeCompare(b)
   })
 
-  const cellW = 150
-  const cellH = 130
+  const cellW = 180
+  const cellH = 160
   const areaPadding = 60
   const areaGap = 80
   let currentY = areaPadding

@@ -5,6 +5,18 @@ import { getAreaColor } from "@/lib/layout-engine"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { X, Router, Network, ArrowRightLeft } from "lucide-react"
 
+const ROLE_COLORS: Record<string, string> = {
+  internal: "#2dd4a0",
+  abr: "#38bdf8",
+  asbr: "#f97316",
+}
+
+const ROLE_LABELS: Record<string, string> = {
+  internal: "Internal Router",
+  abr: "Area Border Router (ABR)",
+  asbr: "AS Boundary Router (ASBR)",
+}
+
 interface DetailsPanelProps {
   selectedNode: GraphNode | null
   selectedEdge: GraphEdge | null
@@ -75,7 +87,22 @@ export function DetailsPanel({ selectedNode, selectedEdge, nodes, onClose }: Det
           {isRouter && (
             <div className="flex flex-col gap-0">
               <DetailRow label="Router ID" value={(data as OSPFRouter).routerId} mono />
-              <DetailRow label="Role" value={(data as OSPFRouter).role.toUpperCase()} />
+              <div className="flex justify-between items-center gap-2 py-1.5 border-b border-border/50">
+                <span className="text-xs text-muted-foreground shrink-0">Role</span>
+                {(() => {
+                  const role = (data as OSPFRouter).role
+                  const roleColor = ROLE_COLORS[role] ?? "#94a3b8"
+                  const roleLabel = ROLE_LABELS[role] ?? role.toUpperCase()
+                  return (
+                    <span
+                      className="text-[10px] font-bold px-2 py-0.5 rounded"
+                      style={{ backgroundColor: roleColor + "20", color: roleColor, border: `1px solid ${roleColor}40` }}
+                    >
+                      {roleLabel}
+                    </span>
+                  )
+                })()}
+              </div>
               <DetailRow label="Area" value={`Area ${selectedNode.area}`} />
               {(data as OSPFRouter).sequenceNumber && (
                 <DetailRow label="Seq Number" value={(data as OSPFRouter).sequenceNumber!} mono />

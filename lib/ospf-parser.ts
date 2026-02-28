@@ -7,8 +7,8 @@ import type {
 } from "./ospf-types"
 
 /**
- * Main parser: takes raw "show ip ospf database" text
- * and returns an OSPFTopology object.
+ * Main parser: takes raw "show ip ospf database" text (and/or
+ * "show ip ospf database router/network") and returns an OSPFTopology.
  */
 export function parseOSPFData(input: string): OSPFTopology {
   const lines = input.split("\n")
@@ -19,9 +19,14 @@ export function parseOSPFData(input: string): OSPFTopology {
   const networkMap = new Map<string, OSPFNetwork>()
   const links: OSPFLink[] = []
   const areas = new Set<string>()
-  const p2pCosts = new Map<string, { srcId: string; tgtId: string; srcCost: number; tgtCost: number; ifInfo: string; area: string }>()
 
-  // Build routers from Router LSAs
+  // p2pCosts accumulates link costs from both directions before building edges
+  const p2pCosts = new Map<
+    string,
+    { srcId: string; tgtId: string; srcCost: number; tgtCost: number; ifInfo: string; area: string }
+  >()
+
+  // ── Build routers from Router LSAs ──────────────────────────
   for (const lsa of routerLSAs) {
     areas.add(lsa.area)
     const rid = lsa.routerId
@@ -47,6 +52,9 @@ export function parseOSPFData(input: string): OSPFTopology {
       const existing = routerMap.get(rid)!
       if (lsa.isABR && existing.role === "internal") existing.role = "abr"
       if (lsa.isASBR) existing.role = "asbr"
+      if (!existing.lsaTypes.includes("Router LSA (Type 1)")) {
+        existing.lsaTypes.push("Router LSA (Type 1)")
+      }
     }
 
     const router = routerMap.get(rid)!
@@ -56,23 +64,21 @@ export function parseOSPFData(input: string): OSPFTopology {
         if (!router.neighbors.includes(link.linkId)) {
           router.neighbors.push(link.linkId)
         }
-        // Track costs from both directions
-        const key = [rid, link.linkId].sort().join("-")
+        // Accumulate costs from both sides
+        const key = [rid, link.linkId].sort().join("|")
         const existing = p2pCosts.get(key)
         if (existing) {
-          // Second direction: fill in the other side's cost
           if (rid === existing.srcId) {
             existing.srcCost = link.metric
           } else {
             existing.tgtCost = link.metric
           }
         } else {
-          // First direction seen
           p2pCosts.set(key, {
             srcId: rid,
             tgtId: link.linkId,
             srcCost: link.metric,
-            tgtCost: link.metric, // default same until we see the other side
+            tgtCost: link.metric,
             ifInfo: link.linkData,
             area: lsa.area,
           })
@@ -90,8 +96,21 @@ export function parseOSPFData(input: string): OSPFTopology {
     }
   }
 
-  // Build directional P2P links from collected cost data
+  // ── Build P2P links, ensuring both endpoints exist ──────────
   for (const [, p] of p2pCosts) {
+    for (const rid of [p.srcId, p.tgtId]) {
+      if (!routerMap.has(rid)) {
+        routerMap.set(rid, {
+          id: rid,
+          routerId: rid,
+          role: "internal",
+          area: p.area,
+          lsaTypes: [],
+          neighbors: [],
+          networks: [],
+        })
+      }
+    }
     links.push({
       id: `p2p-${p.srcId}-${p.tgtId}`,
       source: p.srcId,
@@ -105,7 +124,7 @@ export function parseOSPFData(input: string): OSPFTopology {
     })
   }
 
-  // Build networks from Network LSAs
+  // ── Build networks from Network LSAs ─────────────────────────
   for (const nlsa of networkLSAs) {
     areas.add(nlsa.area)
     const nid = nlsa.linkStateId
@@ -146,6 +165,24 @@ export function parseOSPFData(input: string): OSPFTopology {
         if (!r.lsaTypes.includes("Network LSA (Type 2)")) {
           r.lsaTypes.push("Network LSA (Type 2)")
         }
+      }
+    }
+  }
+
+  // ── Ensure all neighbor references exist as router nodes ────
+  // Iterate over a snapshot so we can safely mutate routerMap
+  for (const router of Array.from(routerMap.values())) {
+    for (const neighborId of router.neighbors) {
+      if (!routerMap.has(neighborId)) {
+        routerMap.set(neighborId, {
+          id: neighborId,
+          routerId: neighborId,
+          role: "internal",
+          area: router.area,
+          lsaTypes: [],
+          neighbors: [],
+          networks: [],
+        })
       }
     }
   }
@@ -193,80 +230,68 @@ function parseRouterLSAs(lines: string[]): RawRouterLSA[] {
   const result: RawRouterLSA[] = []
   let currentArea = "0"
 
-  // Split the input into LSA blocks.
-  // Every "LS age:" starts a new LSA block.
-  const blocks = splitIntoBlocks(lines, (line) => /^\s*LS age:\s*\d+/i.test(line))
+  const blocks = splitLSABlocks(lines)
 
   for (const block of blocks) {
-    // Check for area header lines BEFORE this block
-    // (We track area globally as we iterate)
-    updateArea(block, (a) => { currentArea = a })
+    // Track area from header pseudo-blocks
+    if (block.isAreaHeader) {
+      currentArea = block.area!
+      continue
+    }
 
     // Only process Router Link LSA blocks
-    if (!block.some((l) => /LS Type:\s*Router Links/i.test(l))) continue
+    if (!block.lines.some((l) => /LS Type:\s*Router Links/i.test(l))) continue
 
     let age = 0
     let routerId = ""
+    let advertisingRouter = ""
     let seqNumber = ""
     let checksum = ""
     let isABR = false
     let isASBR = false
-    const lsaLinks: RawLink[] = []
 
-    for (const line of block) {
-      const trimmed = line.trim()
-      const ageM = trimmed.match(/^LS age:\s*(\d+)/i)
+    for (const line of block.lines) {
+      const t = line.trim()
+
+      // LS age: can be a number or "MAXAGE(3600)"
+      const ageM = t.match(/^LS age:\s*(?:MAXAGE\()?(\d+)\)?/i)
       if (ageM) { age = parseInt(ageM[1]); continue }
 
-      const lsidM = trimmed.match(/^Link State ID:\s*([\d.]+)/i)
+      const lsidM = t.match(/^Link State ID:\s*([\d.]+)/i)
       if (lsidM) { routerId = lsidM[1]; continue }
 
-      const seqM = trimmed.match(/^LS Seq Number:\s*(\S+)/i)
+      const advM = t.match(/^Advertising Router:\s*([\d.]+)/i)
+      if (advM) { advertisingRouter = advM[1]; continue }
+
+      const seqM = t.match(/^LS Seq Number:\s*(\S+)/i)
       if (seqM) { seqNumber = seqM[1]; continue }
 
-      const csM = trimmed.match(/^Checksum:\s*(\S+)/i)
+      const csM = t.match(/^Checksum:\s*(\S+)/i)
       if (csM) { checksum = csM[1]; continue }
 
-      if (/Area Border Router/i.test(trimmed)) { isABR = true; continue }
-      if (/AS Boundary Router/i.test(trimmed)) { isASBR = true; continue }
+      if (/Area Border Router/i.test(t)) { isABR = true; continue }
+      if (/AS Boundary Router/i.test(t)) { isASBR = true; continue }
     }
 
-    // Now parse the link sub-blocks
-    const linkBlocks = splitIntoBlocks(block, (l) => /Link connected to:/i.test(l))
-    for (const lb of linkBlocks) {
-      if (lb.length === 0) continue
-      const headerLine = lb[0].trim()
-      const connM = headerLine.match(/Link connected to:\s*(.+)/i)
-      if (!connM) continue
+    // Prefer Advertising Router as the canonical router-id since it's always
+    // the originating router's router-id. Link State ID equals it for Router LSAs,
+    // but some IOS variants render them differently.
+    const finalRouterId = advertisingRouter || routerId
+    if (!finalRouterId) continue
 
-      const desc = connM[1]
-      let linkType: RawLink["type"] = "stub"
-      if (/point-to-point/i.test(desc)) linkType = "point-to-point"
-      else if (/Transit/i.test(desc)) linkType = "transit"
-      else if (/Stub/i.test(desc)) linkType = "stub"
+    // Parse link sub-blocks within this LSA block
+    const lsaLinks = parseLinkSubBlocks(block.lines)
 
-      let linkId = ""
-      let linkData = ""
-      let metric = 0
-
-      for (const dl of lb) {
-        const t = dl.trim()
-        const lidM = t.match(/\(Link ID\).*?:\s*([\d.]+)/i)
-        if (lidM) linkId = lidM[1]
-        const ldM = t.match(/\(Link Data\).*?:\s*([\d.]+)/i)
-        if (ldM) linkData = ldM[1]
-        const metM = t.match(/TOS 0 Metrics?:\s*(\d+)/i)
-        if (metM) metric = parseInt(metM[1])
-      }
-
-      if (linkId) {
-        lsaLinks.push({ type: linkType, linkId, linkData, metric })
-      }
-    }
-
-    if (routerId) {
-      result.push({ routerId, area: currentArea, age, seqNumber, checksum, isABR, isASBR, links: lsaLinks })
-    }
+    result.push({
+      routerId: finalRouterId,
+      area: currentArea,
+      age,
+      seqNumber,
+      checksum,
+      isABR,
+      isASBR,
+      links: lsaLinks,
+    })
   }
 
   return result
@@ -278,12 +303,15 @@ function parseNetworkLSAs(lines: string[]): RawNetworkLSA[] {
   const result: RawNetworkLSA[] = []
   let currentArea = "0"
 
-  const blocks = splitIntoBlocks(lines, (line) => /^\s*LS age:\s*\d+/i.test(line))
+  const blocks = splitLSABlocks(lines)
 
   for (const block of blocks) {
-    updateArea(block, (a) => { currentArea = a })
+    if (block.isAreaHeader) {
+      currentArea = block.area!
+      continue
+    }
 
-    if (!block.some((l) => /LS Type:\s*Network Links/i.test(l))) continue
+    if (!block.lines.some((l) => /LS Type:\s*Network Links/i.test(l))) continue
 
     let linkStateId = ""
     let advertisingRouter = ""
@@ -293,9 +321,9 @@ function parseNetworkLSAs(lines: string[]): RawNetworkLSA[] {
     let networkMask = ""
     const attachedRouters: string[] = []
 
-    for (const line of block) {
+    for (const line of block.lines) {
       const t = line.trim()
-      const ageM = t.match(/^LS age:\s*(\d+)/i)
+      const ageM = t.match(/^LS age:\s*(?:MAXAGE\()?(\d+)\)?/i)
       if (ageM) { age = parseInt(ageM[1]); continue }
       const lsidM = t.match(/^Link State ID:\s*([\d.]+)/i)
       if (lsidM) { linkStateId = lsidM[1]; continue }
@@ -312,58 +340,153 @@ function parseNetworkLSAs(lines: string[]): RawNetworkLSA[] {
     }
 
     if (linkStateId) {
-      result.push({ linkStateId, advertisingRouter, area: currentArea, age, seqNumber, checksum, networkMask, attachedRouters })
+      result.push({
+        linkStateId,
+        advertisingRouter,
+        area: currentArea,
+        age,
+        seqNumber,
+        checksum,
+        networkMask,
+        attachedRouters,
+      })
     }
   }
 
   return result
 }
 
-// ─── Helpers ────────────────────────────────────────────────
+// ─── Link sub-block parser ──────────────────────────────────
 
 /**
- * Split lines into blocks. A new block starts whenever `isBoundary` returns true.
- * Area header lines (Router Link States, Net Link States, Summary) are tracked separately.
+ * Parse "Link connected to: ..." sub-blocks within a Router LSA block.
+ * Handles both the classic Cisco IOS format and the detailed format from
+ * "show ip ospf database router".
  */
-function splitIntoBlocks(lines: string[], isBoundary: (line: string) => boolean): string[][] {
-  const blocks: string[][] = []
-  let current: string[] = []
+function parseLinkSubBlocks(lsaLines: string[]): RawLink[] {
+  const links: RawLink[] = []
+
+  // Find all lines that start a link description
+  const linkStartIndices: number[] = []
+  for (let i = 0; i < lsaLines.length; i++) {
+    if (/Link connected to:/i.test(lsaLines[i])) {
+      linkStartIndices.push(i)
+    }
+  }
+
+  for (let li = 0; li < linkStartIndices.length; li++) {
+    const start = linkStartIndices[li]
+    const end = li + 1 < linkStartIndices.length ? linkStartIndices[li + 1] : lsaLines.length
+
+    const headerLine = lsaLines[start].trim()
+    const connM = headerLine.match(/Link connected to:\s*(.+)/i)
+    if (!connM) continue
+
+    const desc = connM[1].trim()
+    let linkType: RawLink["type"] = "stub"
+    if (/point-to-point/i.test(desc)) linkType = "point-to-point"
+    else if (/Transit/i.test(desc)) linkType = "transit"
+    else if (/Stub/i.test(desc)) linkType = "stub"
+
+    let linkId = ""
+    let linkData = ""
+    let metric = 0
+
+    for (let i = start + 1; i < end; i++) {
+      const t = lsaLines[i].trim()
+
+      // Match Link ID in multiple formats:
+      // "(Link ID) Designated Router address: X"
+      // "(Link ID) Neighboring Router ID: X"
+      // "(Link ID) Net's IP address: X"
+      // "Link ID: X" (some IOS versions)
+      const lidM = t.match(/(?:\(Link ID\)[^:]*|Link\s+ID):\s*([\d.]+)/i)
+      if (lidM) { linkId = lidM[1]; continue }
+
+      // Match Link Data in multiple formats:
+      // "(Link Data) Router Interface address: X"
+      // "(Link Data) Network Mask: X"
+      // "Link Data: X" (some IOS versions)
+      const ldM = t.match(/(?:\(Link Data\)[^:]*|Link\s+Data):\s*([\d.\/]+)/i)
+      if (ldM) { linkData = ldM[1]; continue }
+
+      // "TOS 0 Metrics: N", "TOS 0 Metric: N", "TOS: 0  Metric: N"
+      const metM = t.match(/TOS\s*:?\s*0\s+Metrics?:\s*(\d+)/i)
+      if (metM) { metric = parseInt(metM[1]); continue }
+
+      // Standalone "Metric: N" inside a link block (some IOS versions)
+      const metM2 = t.match(/^Metric:\s*(\d+)/i)
+      if (metM2 && metric === 0) { metric = parseInt(metM2[1]); continue }
+    }
+
+    if (linkId) {
+      links.push({ type: linkType, linkId, linkData, metric })
+    }
+  }
+
+  return links
+}
+
+// ─── Block splitter ─────────────────────────────────────────
+
+interface LSABlock {
+  isAreaHeader: boolean
+  area?: string         // set when isAreaHeader = true
+  lines: string[]       // LSA content lines (empty when isAreaHeader)
+}
+
+/**
+ * Split raw IOS lines into typed blocks:
+ *  - Area header blocks (e.g. "Router Link States (Area 0)")
+ *  - LSA content blocks (start at "LS age:")
+ *
+ * Handles:
+ *  - "LS age: MAXAGE(3600)" — treated as a block boundary
+ *  - Blank lines / comment lines between LSAs
+ *  - Multiple command outputs concatenated (from SSH multi-command fetch)
+ */
+function splitLSABlocks(lines: string[]): LSABlock[] {
+  const blocks: LSABlock[] = []
+  let current: string[] | null = null
+
+  const flushCurrent = () => {
+    if (current && current.length > 0) {
+      blocks.push({ isAreaHeader: false, lines: current })
+    }
+    current = null
+  }
 
   for (const line of lines) {
-    // Track area headers -- these are not boundaries, they belong to the current context
-    if (/(?:Router|Net|Summary.*)\s+Link States\s+\(Area\s+\d+\)/i.test(line)) {
-      // Push any accumulated block
-      if (current.length > 0) {
-        blocks.push(current)
-        current = []
-      }
-      // Start a new pseudo-block with just the header
-      blocks.push([line])
+    // Area / section header — e.g.:
+    //   "                Router Link States (Area 0)"
+    //   "                Net Link States (Area 1)"
+    //   "                Summary Net Link States (Area 0)"
+    const areaM = line.match(/(?:Router|Net|Summary\s+Net|Summary\s+AS|Type-7\s+AS\s+External)\s+Link\s+States\s+\(Area\s+([\d.]+)\)/i)
+    if (areaM) {
+      flushCurrent()
+      blocks.push({ isAreaHeader: true, area: areaM[1], lines: [] })
       continue
     }
 
-    if (isBoundary(line)) {
-      if (current.length > 0) {
-        blocks.push(current)
-      }
+    // LSA boundary: "  LS age: N" or "  LS age: MAXAGE(N)"
+    const isLSAStart = /^\s*LS age:\s*(?:\d+|MAXAGE\(\d+\))/i.test(line)
+    if (isLSAStart) {
+      flushCurrent()
       current = [line]
-    } else {
+      continue
+    }
+
+    // Accumulate into current LSA block (or discard if no block started yet)
+    if (current !== null) {
       current.push(line)
     }
   }
-  if (current.length > 0) blocks.push(current)
+
+  flushCurrent()
   return blocks
 }
 
-/**
- * Scan a block for area header lines and call the setter if found.
- */
-function updateArea(block: string[], setArea: (area: string) => void) {
-  for (const line of block) {
-    const m = line.match(/Link States\s+\(Area\s+(\d+)\)/i)
-    if (m) setArea(m[1])
-  }
-}
+// ─── Helpers ────────────────────────────────────────────────
 
 function dedup(links: OSPFLink[]): OSPFLink[] {
   const seen = new Set<string>()

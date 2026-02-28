@@ -9,6 +9,9 @@ export type LSAType =
   | "ASBR Summary LSA (Type 4)"
   | "AS External LSA (Type 5)"
 
+// View filter modes for the topology canvas
+export type ViewFilter = "all" | "cost-unbalanced" | "cost-balanced" | "abr" | "asbr" | "down"
+
 export interface OSPFRouter {
   id: string
   routerId: string
@@ -125,4 +128,5 @@ export interface VisualizationState {
   panY: number
   filterArea: string | null
   filterLinkType: LinkType | null
+  viewFilter: ViewFilter
 }

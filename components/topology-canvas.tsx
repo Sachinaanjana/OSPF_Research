@@ -263,14 +263,16 @@ export function TopologyCanvas({
   // Determine rendering LOD: at low zoom or many nodes, use simplified shapes
   const detailLevel = useMemo(() => {
     const totalElements = localNodes.length + edges.length
-    if (zoom < 0.3 || totalElements > 800) return "minimal"
-    if (zoom < 0.5 || totalElements > 400) return "simple"
+    if (zoom < 0.15 || totalElements > 2000) return "minimal"
+    if (zoom < 0.3 || totalElements > 1000) return "simple"
     return "detailed"
   }, [zoom, localNodes.length, edges.length])
 
   // Viewport bounds for culling (in world coordinates)
   const viewport = useMemo(() => {
-    const margin = 100
+    // Use a generous margin so nodes near edges of the visible area are never culled.
+    // 300px world-space margin prevents pop-in when panning.
+    const margin = Math.max(300, 500 / zoom)
     return {
       left: (-panX / zoom) - margin,
       top: (-panY / zoom) - margin,
@@ -560,6 +562,21 @@ export function TopologyCanvas({
       } else if (detailLevel === "simple") {
         if (node.type === "router") {
           drawRouterSimple(ctx, node.x, node.y, drawColor, isSelected)
+          // Show role badge even in simple mode
+          if (node.role && node.role !== "internal") {
+            const badge = node.role.toUpperCase()
+            const roleColor = ROLE_COLORS[node.role] ?? drawColor
+            ctx.font = "bold 8px system-ui, sans-serif"
+            const badgeW = ctx.measureText(badge).width + 8
+            ctx.fillStyle = roleColor
+            ctx.beginPath()
+            ctx.roundRect(node.x - badgeW / 2, node.y - 16, badgeW, 12, 2)
+            ctx.fill()
+            ctx.fillStyle = "#0d1117"
+            ctx.textAlign = "center"
+            ctx.textBaseline = "middle"
+            ctx.fillText(badge, node.x, node.y - 10)
+          }
         } else {
           drawNetworkSimple(ctx, node.x, node.y, drawColor, isSelected)
         }
@@ -568,9 +585,10 @@ export function TopologyCanvas({
           drawRouterDetailed(ctx, node.x, node.y, 20, drawColor, isSelected)
           if (node.role && node.role !== "internal") {
             const badge = node.role.toUpperCase()
+            const roleColor = ROLE_COLORS[node.role] ?? color
             ctx.font = "bold 9px system-ui, sans-serif"
             const badgeW = ctx.measureText(badge).width + 10
-            ctx.fillStyle = color
+            ctx.fillStyle = roleColor
             ctx.beginPath()
             ctx.roundRect(node.x - badgeW / 2, node.y - 20 * 0.65 - 18, badgeW, 15, 3)
             ctx.fill()

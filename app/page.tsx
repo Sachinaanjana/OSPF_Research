@@ -1,9 +1,10 @@
 "use client"
 
-import { useState, useCallback, useMemo, useEffect, useRef } from "react"
+import { useState, useCallback, useMemo, useRef } from "react"
 import { toast } from "sonner"
 import { AppHeader } from "@/components/app-header"
 import { InputPanel } from "@/components/input-panel"
+import { SnapshotsPanel } from "@/components/snapshots-panel"
 import { TopologyCanvas } from "@/components/topology-canvas"
 import { ControlPanel } from "@/components/control-panel"
 import { DetailsPanel } from "@/components/details-panel"
@@ -20,33 +21,19 @@ import type {
   LayoutAlgorithm,
   LinkType,
   TopologyChange,
+  ViewFilter,
 } from "@/lib/ospf-types"
 import {
   PanelLeft,
   PanelRight,
   ChevronLeft,
   ChevronRight,
+  FileText,
+  Database,
 } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
-interface AuthUser {
-  name: string
-  email: string
-}
-
 export default function Page() {
-  // ── Auth ──
-  const [user, setUser] = useState<AuthUser | null>(null)
-
-  useEffect(() => {
-    fetch("/api/auth/me")
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (data?.user) setUser(data.user)
-      })
-      .catch(() => {})
-  }, [])
-
   // ── Core topology state ──
   const [inputText, setInputText] = useState("")
   const [isParsing, setIsParsing] = useState(false)
@@ -57,6 +44,7 @@ export default function Page() {
 
   // ── Visualization state ──
   const [layout, setLayout] = useState<LayoutAlgorithm>("force-directed")
+  const [spacingMultiplier, setSpacingMultiplier] = useState(1.5)
   const [showLabels, setShowLabels] = useState(true)
   const [showMetrics, setShowMetrics] = useState(true)
   const [colorBy, setColorBy] = useState<"area" | "lsa-type" | "role">("area")
@@ -69,10 +57,13 @@ export default function Page() {
   const focusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [filterArea, setFilterArea] = useState<string | null>(null)
   const [filterLinkType, setFilterLinkType] = useState<LinkType | null>(null)
+  const [viewFilter, setViewFilter] = useState<ViewFilter>("all")
   const [showLeftPanel, setShowLeftPanel] = useState(true)
   const [showRightPanel, setShowRightPanel] = useState(true)
 
-  // ── Real-time ──
+  // ── Left panel tab ──
+  const [leftTab, setLeftTab] = useState<"input" | "snapshots">("input")
+  const [isSaving, setIsSaving] = useState(false)
   const [events, setEvents] = useState<TopologyChange[]>([])
   const canvasSizeRef = useRef({ width: 900, height: 600 })
 
@@ -125,7 +116,7 @@ export default function Page() {
   const handlePollingUpdate = useCallback(
     (newTopo: OSPFTopology, changes: TopologyChange[]) => {
       const { width, height } = canvasSizeRef.current
-      const graph = buildGraph(newTopo, layout, width, height)
+      const graph = buildGraph(newTopo, layout, width, height, spacingMultiplier)
 
       if (changes.length > 0) {
         const annotatedNodes = applyNodeStatuses(graph.nodes, changes, nodes)
@@ -142,7 +133,7 @@ export default function Page() {
 
       setTopology(newTopo)
     },
-    [layout, nodes, edges, notifyChanges, autoFitView]
+    [layout, spacingMultiplier, nodes, edges, notifyChanges, autoFitView]
   )
 
   const { pollingState, startPolling, stopPolling, setInterval: setPollingInterval } =
@@ -168,7 +159,7 @@ export default function Page() {
         if (topology) {
           const changes = diffTopologies(topology, parsed)
           if (changes.length > 0) {
-            const graph = buildGraph(parsed, layout, width, height)
+            const graph = buildGraph(parsed, layout, width, height, spacingMultiplier)
             const annotatedNodes = applyNodeStatuses(graph.nodes, changes, nodes)
             const annotatedEdges = applyEdgeStatuses(graph.edges, changes, edges)
             setNodes(annotatedNodes)
@@ -183,7 +174,7 @@ export default function Page() {
         }
 
         setTopology(parsed)
-        const graph = buildGraph(parsed, layout, width, height)
+        const graph = buildGraph(parsed, layout, width, height, spacingMultiplier)
         setNodes(graph.nodes)
         setEdges(graph.edges)
         setSelectedNodeId(null)
@@ -196,7 +187,7 @@ export default function Page() {
       }
       setIsParsing(false)
     }, 50)
-  }, [inputText, layout, topology, nodes, edges, notifyChanges, autoFitView])
+  },     [inputText, layout, spacingMultiplier, topology, nodes, edges, notifyChanges, autoFitView])
 
   // ── SSH data received ──
   const handleSSHData = useCallback(
@@ -216,7 +207,7 @@ export default function Page() {
         if (topology) {
           const changes = diffTopologies(topology, parsed)
           if (changes.length > 0) {
-            const graph = buildGraph(parsed, layout, width, height)
+            const graph = buildGraph(parsed, layout, width, height, spacingMultiplier)
             const annotatedNodes = applyNodeStatuses(graph.nodes, changes, nodes)
             const annotatedEdges = applyEdgeStatuses(graph.edges, changes, edges)
             setNodes(annotatedNodes)
@@ -231,7 +222,7 @@ export default function Page() {
         }
 
         setTopology(parsed)
-        const graph = buildGraph(parsed, layout, width, height)
+        const graph = buildGraph(parsed, layout, width, height, spacingMultiplier)
         setNodes(graph.nodes)
         setEdges(graph.edges)
         setSelectedNodeId(null)
@@ -240,11 +231,24 @@ export default function Page() {
         setFilterArea(null)
         setFilterLinkType(null)
         toast.success(`Loaded ${parsed.routers.length} routers from ${host}`)
+
+        // Auto-save SSH snapshots to DB
+        fetch("/api/snapshots", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            topology: parsed,
+            raw_text: data,
+            source: "ssh",
+            host,
+            name: `${host} — ${parsed.routers.length} routers`,
+          }),
+        }).catch(() => {/* silent */})
       } catch {
         setParseError("Failed to parse OSPF data from " + host)
       }
     },
-    [topology, layout, nodes, edges, notifyChanges, autoFitView]
+    [topology, layout, spacingMultiplier, nodes, edges, notifyChanges, autoFitView]
   )
 
   // ── Clear ──
@@ -257,7 +261,62 @@ export default function Page() {
     setSelectedNodeId(null)
     setSelectedEdgeId(null)
     setEvents([])
+    setViewFilter("all")
   }, [])
+
+  // ── Save snapshot to DB ──
+  const handleSaveSnapshot = useCallback(async () => {
+    if (!topology) {
+      toast.error("No topology to save. Parse some OSPF data first.")
+      return
+    }
+    setIsSaving(true)
+    try {
+      const res = await fetch("/api/snapshots", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          topology,
+          raw_text: inputText || null,
+          source: "manual",
+          name: `Snapshot — ${topology.routers.length} routers`,
+        }),
+      })
+      if (!res.ok) throw new Error("Save failed")
+      toast.success("Topology saved to database")
+    } catch {
+      toast.error("Failed to save snapshot")
+    } finally {
+      setIsSaving(false)
+    }
+  }, [topology, inputText])
+
+  // ── Load snapshot from DB ──
+  const handleLoadSnapshot = useCallback(
+    (topoData: unknown, rawText: string | null) => {
+      try {
+        const parsed = topoData as OSPFTopology
+        if (!parsed?.routers) throw new Error("Invalid topology data")
+        const { width, height } = canvasSizeRef.current
+        const graph = buildGraph(parsed, layout, width, height, spacingMultiplier)
+        setTopology(parsed)
+        setNodes(graph.nodes)
+        setEdges(graph.edges)
+        if (rawText) setInputText(rawText)
+        setSelectedNodeId(null)
+        setSelectedEdgeId(null)
+        setFilterArea(null)
+        setFilterLinkType(null)
+        setViewFilter("all")
+        setEvents([])
+        autoFitView(graph.nodes)
+        setLeftTab("input")
+      } catch {
+        toast.error("Failed to restore snapshot topology")
+      }
+    },
+    [layout, spacingMultiplier, autoFitView]
+  )
 
   // ── Layout change ──
   const handleLayoutChange = useCallback(
@@ -265,13 +324,28 @@ export default function Page() {
       setLayout(newLayout)
       if (topology) {
         const { width, height } = canvasSizeRef.current
-        const graph = buildGraph(topology, newLayout, width, height)
+        const graph = buildGraph(topology, newLayout, width, height, spacingMultiplier)
         setNodes(graph.nodes)
         setEdges(graph.edges)
         autoFitView(graph.nodes)
       }
     },
-    [topology, autoFitView]
+    [topology, spacingMultiplier, autoFitView]
+  )
+
+  // ── Spacing change handler ──
+  const handleSpacingChange = useCallback(
+    (value: number) => {
+      setSpacingMultiplier(value)
+      if (topology) {
+        const { width, height } = canvasSizeRef.current
+        const graph = buildGraph(topology, layout, width, height, value)
+        setNodes(graph.nodes)
+        setEdges(graph.edges)
+        autoFitView(graph.nodes)
+      }
+    },
+    [topology, layout, autoFitView]
   )
 
   // ── Focus node (from search) ──
@@ -294,25 +368,87 @@ export default function Page() {
     [nodes, zoom]
   )
 
+  // ── View filter logic ──
+  // For cost-unbalanced: edges where sourceCost !== targetCost (asymmetric metrics)
+  // For cost-balanced: edges where sourceCost === targetCost (symmetric metrics)
+  // For down: nodes with status "removed" or edges with status "removed"
+  const unbalancedEdgeNodeIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const e of edges) {
+      if (e.sourceCost !== e.targetCost && e.linkType === "point-to-point") {
+        ids.add(e.source)
+        ids.add(e.target)
+      }
+    }
+    return ids
+  }, [edges])
+
+  const balancedEdgeNodeIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const e of edges) {
+      if (e.sourceCost === e.targetCost && e.linkType === "point-to-point" && e.cost > 0) {
+        ids.add(e.source)
+        ids.add(e.target)
+      }
+    }
+    return ids
+  }, [edges])
+
   // ── Derived state ──
   const areas = useMemo(() => topology?.areas || [], [topology])
 
   const filteredNodes = useMemo(() => {
-    if (!filterArea) return nodes
-    return nodes.filter((n) => n.area === filterArea)
-  }, [nodes, filterArea])
+    let result = nodes
+
+    // Apply area filter
+    if (filterArea) result = result.filter((n) => n.area === filterArea)
+
+    // Apply view filter
+    if (viewFilter === "abr") {
+      result = result.filter((n) => n.type === "router" && n.role === "abr")
+    } else if (viewFilter === "asbr") {
+      result = result.filter((n) => n.type === "router" && n.role === "asbr")
+    } else if (viewFilter === "cost-unbalanced") {
+      result = result.filter((n) => unbalancedEdgeNodeIds.has(n.id))
+    } else if (viewFilter === "cost-balanced") {
+      result = result.filter((n) => balancedEdgeNodeIds.has(n.id))
+    } else if (viewFilter === "down") {
+      result = result.filter((n) => n.status === "removed")
+    }
+
+    return result
+  }, [nodes, filterArea, viewFilter, unbalancedEdgeNodeIds, balancedEdgeNodeIds])
 
   const filteredEdges = useMemo(() => {
     let filtered = edges
-    if (filterArea) {
-      const nodeIds = new Set(filteredNodes.map((n) => n.id))
+
+    const nodeIds = new Set(filteredNodes.map((n) => n.id))
+
+    if (filterArea || viewFilter !== "all") {
       filtered = filtered.filter((e) => nodeIds.has(e.source) && nodeIds.has(e.target))
     }
+
     if (filterLinkType) {
       filtered = filtered.filter((e) => e.linkType === filterLinkType)
     }
+
+    // For cost-unbalanced view: only show the unbalanced edges
+    if (viewFilter === "cost-unbalanced") {
+      filtered = filtered.filter((e) => e.sourceCost !== e.targetCost)
+    }
+
+    // For cost-balanced view: only show the balanced edges
+    if (viewFilter === "cost-balanced") {
+      filtered = filtered.filter((e) => e.sourceCost === e.targetCost && e.cost > 0)
+    }
+
+    // For down view: show removed edges
+    if (viewFilter === "down") {
+      filtered = filtered.filter((e) => e.status === "removed")
+    }
+
     return filtered
-  }, [edges, filteredNodes, filterArea, filterLinkType])
+  }, [edges, filteredNodes, filterArea, filterLinkType, viewFilter])
 
   const selectedNode = useMemo(
     () => (selectedNodeId ? filteredNodes.find((n) => n.id === selectedNodeId) || null : null),
@@ -328,27 +464,63 @@ export default function Page() {
   // ── Render ──
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-background">
-      <AppHeader pollingState={pollingState} user={user} />
+      <AppHeader pollingState={pollingState} />
 
       <div className="flex flex-1 overflow-hidden">
-        {/* Left panel - Input */}
+        {/* Left panel - Input / Snapshots */}
         <div
           className={`flex flex-col border-r border-border bg-card transition-all duration-200 ${
             showLeftPanel ? "w-80" : "w-0"
           } overflow-hidden shrink-0`}
         >
           {showLeftPanel && (
-            <ScrollArea className="flex-1">
-              <InputPanel
-                value={inputText}
-                onChange={setInputText}
-                onParse={handleParse}
-                onClear={handleClear}
-                onSSHData={handleSSHData}
-                isParsing={isParsing}
-                parseError={parseError}
-              />
-            </ScrollArea>
+            <>
+              {/* Tab switcher */}
+              <div className="flex border-b border-border shrink-0">
+                <button
+                  onClick={() => setLeftTab("input")}
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium transition-colors ${
+                    leftTab === "input"
+                      ? "text-foreground border-b-2 border-primary bg-card"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  Input
+                </button>
+                <button
+                  onClick={() => setLeftTab("snapshots")}
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium transition-colors ${
+                    leftTab === "snapshots"
+                      ? "text-foreground border-b-2 border-primary bg-card"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <Database className="w-3.5 h-3.5" />
+                  Snapshots
+                </button>
+              </div>
+
+              {leftTab === "input" ? (
+                <ScrollArea className="flex-1">
+                  <InputPanel
+                    value={inputText}
+                    onChange={setInputText}
+                    onParse={handleParse}
+                    onClear={handleClear}
+                    onSSHData={handleSSHData}
+                    isParsing={isParsing}
+                    parseError={parseError}
+                  />
+                </ScrollArea>
+              ) : (
+                <SnapshotsPanel
+                  onLoadSnapshot={handleLoadSnapshot}
+                  onSaveSnapshot={handleSaveSnapshot}
+                  isSaving={isSaving}
+                />
+              )}
+            </>
           )}
         </div>
 
@@ -465,6 +637,13 @@ export default function Page() {
                   onStopPolling={stopPolling}
                   onSetPollingInterval={setPollingInterval}
                   events={events}
+                  nodes={filteredNodes}
+                  allNodes={nodes}
+                  allEdges={edges}
+                  spacingMultiplier={spacingMultiplier}
+                  onSpacingChange={handleSpacingChange}
+                  viewFilter={viewFilter}
+                  onViewFilterChange={setViewFilter}
                 />
               </ScrollArea>
             </div>
