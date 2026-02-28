@@ -6,32 +6,68 @@ import type {
   OSPFInterface,
   OSPFSummaryRoute,
   OSPFExternalRoute,
+  OSPFNeighborEntry,
+  OSPFLearnedRoute,
+  OSPFProcessInfo,
   RouterRole,
 } from "./ospf-types"
 
+// ─── Multi-command input structure ─────────────────────────
+
+export interface MultiCommandInput {
+  showIpOspf?: string               // show ip ospf
+  showIpOspfNeighbor?: string       // show ip ospf neighbor
+  showIpOspfDatabaseRouter?: string // show ip ospf database router
+  showIpOspfDatabaseNetwork?: string// show ip ospf database network
+  showIpOspfInterface?: string      // show ip ospf interface
+  showIpRouteOspf?: string          // show ip route ospf
+  // legacy single-field input
+  raw?: string
+}
+
 /**
- * Main parser: takes raw "show ip ospf database" text (and/or
- * "show ip ospf database router/network") and returns an OSPFTopology.
+ * Main entry point. Accepts either a MultiCommandInput object or
+ * a raw string (legacy single-textarea mode).
  */
-export function parseOSPFData(input: string): OSPFTopology {
-  const lines = input.split("\n")
+export function parseOSPFData(input: string | MultiCommandInput): OSPFTopology {
+  let multi: MultiCommandInput
+
+  if (typeof input === "string") {
+    // Legacy mode: treat as combined database output
+    multi = { raw: input }
+  } else {
+    multi = input
+  }
+
+  // Combine router + network database text (and raw fallback)
+  const dbText = [
+    multi.raw ?? "",
+    multi.showIpOspfDatabaseRouter ?? "",
+    multi.showIpOspfDatabaseNetwork ?? "",
+  ].join("\n")
+
+  const lines = dbText.split("\n")
   const routerLSAs = parseRouterLSAs(lines)
   const networkLSAs = parseNetworkLSAs(lines)
-  const summaryLSAs = parseSummaryLSAs(lines)       // Type 3 + Type 4
-  const externalLSAs = parseExternalLSAs(lines)     // Type 5
+  const summaryLSAs = parseSummaryLSAs(lines)
+  const externalLSAs = parseExternalLSAs(lines)
+
+  // Parse auxiliary command outputs
+  const processInfo = multi.showIpOspf ? parseShowIpOspf(multi.showIpOspf) : undefined
+  const neighborEntries = multi.showIpOspfNeighbor ? parseShowIpOspfNeighbor(multi.showIpOspfNeighbor) : []
+  const ifaceDetails = multi.showIpOspfInterface ? parseShowIpOspfInterface(multi.showIpOspfInterface) : []
+  const learnedRoutes = multi.showIpRouteOspf ? parseShowIpRouteOspf(multi.showIpRouteOspf) : []
 
   const routerMap = new Map<string, OSPFRouter>()
   const networkMap = new Map<string, OSPFNetwork>()
   const links: OSPFLink[] = []
   const areas = new Set<string>()
 
-  // p2pCosts accumulates link costs from both directions before building edges
   const p2pCosts = new Map<
     string,
     { srcId: string; tgtId: string; srcCost: number; tgtCost: number; ifInfo: string; area: string }
   >()
 
-  // Helper: ensure a router stub node exists
   const ensureRouter = (rid: string, area: string): OSPFRouter => {
     if (!routerMap.has(rid)) {
       routerMap.set(rid, {
@@ -42,11 +78,13 @@ export function parseOSPFData(input: string): OSPFTopology {
         lsaTypes: [],
         neighbors: [],
         neighborInterfaces: {},
+        neighborEntries: [],
         interfaces: [],
         networks: [],
         stubNetworks: [],
         summaryRoutes: [],
         externalRoutes: [],
+        learnedRoutes: [],
       })
     }
     return routerMap.get(rid)!
@@ -71,11 +109,13 @@ export function parseOSPFData(input: string): OSPFTopology {
         lsaTypes: ["Router LSA (Type 1)"],
         neighbors: [],
         neighborInterfaces: {},
+        neighborEntries: [],
         interfaces: [],
         networks: [],
         stubNetworks: [],
         summaryRoutes: [],
         externalRoutes: [],
+        learnedRoutes: [],
         sequenceNumber: lsa.seqNumber,
         age: lsa.age,
         checksum: lsa.checksum,
@@ -87,7 +127,6 @@ export function parseOSPFData(input: string): OSPFTopology {
       if (!existing.lsaTypes.includes("Router LSA (Type 1)")) {
         existing.lsaTypes.push("Router LSA (Type 1)")
       }
-      // Update LSA metadata if more recent
       if (!existing.sequenceNumber) existing.sequenceNumber = lsa.seqNumber
       if (!existing.age) existing.age = lsa.age
       if (!existing.checksum) existing.checksum = lsa.checksum
@@ -101,7 +140,6 @@ export function parseOSPFData(input: string): OSPFTopology {
         if (link.linkData && !router.neighborInterfaces[link.linkId]) {
           router.neighborInterfaces[link.linkId] = link.linkData
         }
-        // Record interface
         if (link.linkData && !router.interfaces.some(i => i.address === link.linkData && i.connectedTo === link.linkId)) {
           router.interfaces.push({ address: link.linkData, connectedTo: link.linkId, linkType: "point-to-point", cost: link.metric })
         }
@@ -118,13 +156,11 @@ export function parseOSPFData(input: string): OSPFTopology {
         if (!router.stubNetworks.includes(stubLabel)) router.stubNetworks.push(stubLabel)
         const netId = `stub-${link.linkId}-${link.linkData}`
         if (!router.networks.includes(netId)) router.networks.push(netId)
-        // Record interface for stub (linkData is the network mask, linkId is the network address)
         if (link.linkData && !router.interfaces.some(i => i.connectedTo === link.linkId && i.linkType === "stub")) {
           router.interfaces.push({ address: link.linkData, connectedTo: link.linkId, linkType: "stub", cost: link.metric })
         }
       } else if (link.type === "transit") {
         if (!router.networks.includes(link.linkId)) router.networks.push(link.linkId)
-        // linkData is the router's interface IP on the transit network
         if (link.linkData && !router.interfaces.some(i => i.address === link.linkData && i.connectedTo === link.linkId)) {
           router.interfaces.push({ address: link.linkData, connectedTo: link.linkId, linkType: "transit", cost: link.metric })
         }
@@ -132,32 +168,18 @@ export function parseOSPFData(input: string): OSPFTopology {
     }
   }
 
-  // ── Build P2P links, ensuring both endpoints exist ──────────
+  // ── Build P2P links ──────────────────────────────────────
   for (const [, p] of p2pCosts) {
-    // Ensure both routers exist
     const srcRouter = ensureRouter(p.srcId, p.area)
     const tgtRouter = ensureRouter(p.tgtId, p.area)
 
-    // Bidirectionally populate neighbors and interfaces
-    if (!srcRouter.neighbors.includes(p.tgtId)) {
-      srcRouter.neighbors.push(p.tgtId)
-    }
-    if (!tgtRouter.neighbors.includes(p.srcId)) {
-      tgtRouter.neighbors.push(p.srcId)
-    }
-    if (p.ifInfo && !srcRouter.neighborInterfaces[p.tgtId]) {
-      srcRouter.neighborInterfaces[p.tgtId] = p.ifInfo
-    }
-    // Also store interface on the target side pointing back to source
-    if (p.ifInfo && !tgtRouter.neighborInterfaces[p.srcId]) {
-      tgtRouter.neighborInterfaces[p.srcId] = p.ifInfo
-    }
-    // Record interface entry on target router too
+    if (!srcRouter.neighbors.includes(p.tgtId)) srcRouter.neighbors.push(p.tgtId)
+    if (!tgtRouter.neighbors.includes(p.srcId)) tgtRouter.neighbors.push(p.srcId)
+    if (p.ifInfo && !srcRouter.neighborInterfaces[p.tgtId]) srcRouter.neighborInterfaces[p.tgtId] = p.ifInfo
+    if (p.ifInfo && !tgtRouter.neighborInterfaces[p.srcId]) tgtRouter.neighborInterfaces[p.srcId] = p.ifInfo
     if (p.ifInfo && !tgtRouter.interfaces.some(i => i.connectedTo === p.srcId && i.linkType === "point-to-point")) {
       tgtRouter.interfaces.push({ address: p.ifInfo, connectedTo: p.srcId, linkType: "point-to-point", cost: p.tgtCost })
     }
-
-    console.log("[v0] P2P link:", p.srcId, "<->", p.tgtId, "src neighbors:", srcRouter.neighbors, "tgt neighbors:", tgtRouter.neighbors)
 
     links.push({
       id: `p2p-${p.srcId}-${p.tgtId}`,
@@ -172,7 +194,7 @@ export function parseOSPFData(input: string): OSPFTopology {
     })
   }
 
-  // ── Build networks from Network LSAs ─────────────────────────
+  // ── Build networks from Network LSAs ─────────────────────
   for (const nlsa of networkLSAs) {
     areas.add(nlsa.area)
     const nid = nlsa.linkStateId
@@ -188,13 +210,9 @@ export function parseOSPFData(input: string): OSPFTopology {
 
     for (const ar of nlsa.attachedRouters) {
       const arRouter = ensureRouter(ar, nlsa.area)
-      if (!arRouter.networks.includes(nid)) {
-        arRouter.networks.push(nid)
-      }
-      if (ar === nlsa.advertisingRouter) {
-        if (!arRouter.lsaTypes.includes("Network LSA (Type 2)")) {
-          arRouter.lsaTypes.push("Network LSA (Type 2)")
-        }
+      if (!arRouter.networks.includes(nid)) arRouter.networks.push(nid)
+      if (ar === nlsa.advertisingRouter && !arRouter.lsaTypes.includes("Network LSA (Type 2)")) {
+        arRouter.lsaTypes.push("Network LSA (Type 2)")
       }
       links.push({
         id: `transit-${nid}-${ar}`,
@@ -209,17 +227,15 @@ export function parseOSPFData(input: string): OSPFTopology {
     }
   }
 
-  // ── Ensure all neighbor refs exist and are bidirectional ─────
+  // ── Bidirectional neighbor enforcement ──────────────────
   for (const router of Array.from(routerMap.values())) {
     for (const neighborId of router.neighbors) {
       const nb = ensureRouter(neighborId, router.area)
-      if (!nb.neighbors.includes(router.id)) {
-        nb.neighbors.push(router.id)
-      }
+      if (!nb.neighbors.includes(router.id)) nb.neighbors.push(router.id)
     }
   }
 
-  // ── Attach Summary LSAs (Type 3 / Type 4) to advertising routers ──
+  // ── Attach Summary LSAs ──────────────────────────────────
   for (const s of summaryLSAs) {
     const router = ensureRouter(s.advertisingRouter, s.area)
     if (!router.lsaTypes.includes(s.lsaType)) router.lsaTypes.push(s.lsaType)
@@ -227,7 +243,7 @@ export function parseOSPFData(input: string): OSPFTopology {
     router.summaryRoutes.push(s)
   }
 
-  // ── Attach External LSAs (Type 5) to advertising routers (ASBRs) ──
+  // ── Attach External LSAs ────────────────────────────────
   for (const e of externalLSAs) {
     const router = ensureRouter(e.advertisingRouter, "0")
     if (!router.lsaTypes.includes("AS External LSA (Type 5)")) router.lsaTypes.push("AS External LSA (Type 5)")
@@ -235,18 +251,55 @@ export function parseOSPFData(input: string): OSPFTopology {
     router.externalRoutes.push(e)
   }
 
-  // ── Debug: trace specific router ─────────────────────────
-  const debugRouter = routerMap.get("203.143.61.7")
-  if (debugRouter) {
-    console.log("[v0] 203.143.61.7 found in routerMap:", JSON.stringify({
-      neighbors: debugRouter.neighbors,
-      neighborInterfaces: debugRouter.neighborInterfaces,
-      interfaces: debugRouter.interfaces,
-      networks: debugRouter.networks,
-      lsaTypes: debugRouter.lsaTypes,
-    }, null, 2))
-  } else {
-    console.log("[v0] 203.143.61.7 NOT found in routerMap at all")
+  // ── Attach neighbor entries (show ip ospf neighbor) ──────
+  // Group neighbor entries by their neighbor ID — attach to matching routers
+  for (const ne of neighborEntries) {
+    // Try to find a router whose ID matches the neighbor entry's neighborId
+    // If not found, also try to find by the interface address
+    const router = routerMap.get(ne.neighborId) ?? findRouterByInterface(routerMap, ne.address)
+    if (router && !router.neighborEntries.some(e => e.neighborId === ne.neighborId && e.interface === ne.interface)) {
+      router.neighborEntries.push(ne)
+    }
+    // Also ensure the neighbor is in the neighbors list of the LOCAL router
+    // The local router is the one whose output we're reading — but we don't know which that is.
+    // We'll attach the entry to the neighbor router for display purposes.
+  }
+
+  // ── Enrich interfaces with show ip ospf interface data ──
+  for (const detail of ifaceDetails) {
+    // Find router by interface address or by matching area
+    for (const router of Array.from(routerMap.values())) {
+      const iface = router.interfaces.find(i => i.address === detail.address || i.connectedTo === detail.connectedTo)
+      if (iface) {
+        iface.ifName = detail.ifName
+        iface.state = detail.state
+        iface.drAddress = detail.drAddress
+        iface.bdrAddress = detail.bdrAddress
+        iface.helloInterval = detail.helloInterval
+        iface.deadInterval = detail.deadInterval
+        iface.area = detail.area
+        if (detail.cost > 0 && iface.cost === 0) iface.cost = detail.cost
+        break
+      }
+    }
+  }
+
+  // ── Attach learned routes (show ip route ospf) ──────────
+  // These routes are local to the router we ran the command on — 
+  // but since we don't know which router, attach to the process owner.
+  if (learnedRoutes.length > 0) {
+    const owner = processInfo?.routerId
+      ? routerMap.get(processInfo.routerId)
+      : Array.from(routerMap.values()).find(r => r.lsaTypes.length > 0)
+    if (owner) {
+      owner.learnedRoutes = learnedRoutes
+    }
+  }
+
+  // ── Attach process info ──────────────────────────────────
+  if (processInfo) {
+    const owner = routerMap.get(processInfo.routerId)
+    if (owner) owner.processInfo = processInfo
   }
 
   return {
@@ -256,10 +309,18 @@ export function parseOSPFData(input: string): OSPFTopology {
     areas: Array.from(areas).sort(),
     summaryRoutes: summaryLSAs,
     externalRoutes: externalLSAs,
+    processInfo,
   }
 }
 
-// ─── Internal types ���─────────────────────────────────────────
+function findRouterByInterface(routerMap: Map<string, OSPFRouter>, address: string): OSPFRouter | undefined {
+  for (const router of Array.from(routerMap.values())) {
+    if (router.interfaces.some(i => i.address === address)) return router
+  }
+  return undefined
+}
+
+// ─── Internal types ─────────────────────────────────────────
 
 interface RawRouterLSA {
   routerId: string
@@ -286,6 +347,148 @@ interface RawNetworkLSA {
   checksum: string
   networkMask: string
   attachedRouters: string[]
+}
+
+// ─── show ip ospf parser ────────────────────────────────────
+
+function parseShowIpOspf(text: string): OSPFProcessInfo | undefined {
+  const lines = text.split("\n")
+  let processId = ""
+  let routerId = ""
+  let numberOfAreas: number | undefined
+  let referencesBandwidth: number | undefined
+
+  for (const line of lines) {
+    const t = line.trim()
+    const pidM = t.match(/Routing Process "ospf\s+(\d+)"/i)
+    if (pidM) { processId = pidM[1]; continue }
+    const ridM = t.match(/Router ID\s+([\d.]+)/i)
+    if (ridM) { routerId = ridM[1]; continue }
+    const areaM = t.match(/Number of areas[^:]*:\s*(\d+)/i)
+    if (areaM) { numberOfAreas = parseInt(areaM[1]); continue }
+    const bwM = t.match(/Reference bandwidth unit is\s+(\d+)/i)
+    if (bwM) { referencesBandwidth = parseInt(bwM[1]); continue }
+  }
+
+  if (!processId && !routerId) return undefined
+  return { processId, routerId, numberOfAreas, referencesBandwidth }
+}
+
+// ─── show ip ospf neighbor parser ──────────────────────────
+
+function parseShowIpOspfNeighbor(text: string): OSPFNeighborEntry[] {
+  const entries: OSPFNeighborEntry[] = []
+  const lines = text.split("\n")
+
+  for (const line of lines) {
+    // Typical Cisco IOS format:
+    // Neighbor ID     Pri   State           Dead Time   Address         Interface
+    // 1.1.1.1           1   FULL/DR         00:00:38    10.0.0.1        GigabitEthernet0/0
+    const m = line.match(
+      /^\s*([\d.]+)\s+(\d+)\s+(\S+\/\S+|\S+)\s+(\S+)\s+([\d.]+)\s+(\S+)/
+    )
+    if (m) {
+      entries.push({
+        neighborId: m[1],
+        priority: parseInt(m[2]),
+        state: m[3],
+        deadTime: m[4],
+        address: m[5],
+        interface: m[6],
+      })
+    }
+  }
+
+  return entries
+}
+
+// ─── show ip ospf interface parser ─────────────────────────
+
+function parseShowIpOspfInterface(text: string): Partial<OSPFInterface>[] {
+  const result: Partial<OSPFInterface>[] = []
+  const lines = text.split("\n")
+  let current: Partial<OSPFInterface> | null = null
+
+  const flush = () => {
+    if (current && (current.ifName || current.address)) result.push(current)
+    current = null
+  }
+
+  for (const line of lines) {
+    const t = line.trim()
+
+    // New interface block: "GigabitEthernet0/0 is up, line protocol is up"
+    const ifM = line.match(/^(\S+)\s+is\s+(up|down)/i)
+    if (ifM) {
+      flush()
+      current = { ifName: ifM[1] }
+      continue
+    }
+    if (!current) continue
+
+    // "Internet Address 10.0.0.1/24, Area 0"
+    const addrM = t.match(/Internet Address\s+([\d.]+)(?:\/\d+)?,\s*Area\s+([\d.]+)/i)
+    if (addrM) { current.address = addrM[1]; current.area = addrM[2]; continue }
+
+    // "Process ID 1, Router ID 1.1.1.1, Network Type POINT_TO_POINT, Cost: 1"
+    const costM = t.match(/Cost:\s*(\d+)/i)
+    if (costM) { current.cost = parseInt(costM[1]); continue }
+
+    const netTypeM = t.match(/Network Type\s+(\S+)/i)
+    if (netTypeM) {
+      const nt = netTypeM[1].toUpperCase()
+      if (nt.includes("POINT")) current.linkType = "point-to-point"
+      else if (nt.includes("TRANSIT") || nt.includes("BROADCAST")) current.linkType = "transit"
+      else current.linkType = "stub"
+      continue
+    }
+
+    // "State DR, Network type BROADCAST"
+    const stateM = t.match(/^State\s+(\S+)/i)
+    if (stateM) { current.state = stateM[1]; continue }
+
+    // "Designated Router (ID) 1.1.1.1, Interface address 10.0.0.1"
+    const drM = t.match(/Designated Router.*?Interface address\s+([\d.]+)/i)
+    if (drM) { current.drAddress = drM[1]; continue }
+
+    const bdrM = t.match(/Backup Designated Router.*?Interface address\s+([\d.]+)/i)
+    if (bdrM) { current.bdrAddress = bdrM[1]; continue }
+
+    // "Timer intervals configured, Hello 10, Dead 40"
+    const timerM = t.match(/Hello\s+(\d+),\s*Dead\s+(\d+)/i)
+    if (timerM) { current.helloInterval = parseInt(timerM[1]); current.deadInterval = parseInt(timerM[2]); continue }
+  }
+  flush()
+  return result
+}
+
+// ─── show ip route ospf parser ──────────────────────────────
+
+function parseShowIpRouteOspf(text: string): OSPFLearnedRoute[] {
+  const routes: OSPFLearnedRoute[] = []
+  const lines = text.split("\n")
+
+  for (const line of lines) {
+    // Cisco IOS route line:
+    // O     10.0.0.0/24 [110/20] via 192.168.1.1, 00:01:00, GigabitEthernet0/0
+    // O IA  172.16.0.0/16 [110/30] via ...
+    // O E2  0.0.0.0/0 [110/1] via ...
+    const m = line.match(
+      /^\s*(O(?:\s+(?:IA|E1|E2|N1|N2))?)\s+([\d.]+\/\d+)\s+\[(\d+)\/(\d+)\]\s+via\s+([\d.]+)(?:,\s*\S+,\s*(\S+))?/
+    )
+    if (m) {
+      routes.push({
+        prefix: m[2],
+        routeType: m[1].trim(),
+        metric: parseInt(m[4]),
+        nextHop: m[5],
+        outInterface: m[6] ?? "",
+        tag: undefined,
+      })
+    }
+  }
+
+  return routes
 }
 
 // ─── Router LSA parser ──────────────────────────────────────
@@ -422,16 +625,12 @@ function parseLinkSubBlocks(lsaLines: string[]): RawLink[] {
 
     for (let i = start + 1; i < end; i++) {
       const t = lsaLines[i].trim()
-
       const lidM = t.match(/(?:\(Link ID\)[^:]*|Link\s+ID):\s*([\d.]+)/i)
       if (lidM) { linkId = lidM[1]; continue }
-
       const ldM = t.match(/(?:\(Link Data\)[^:]*|Link\s+Data):\s*([\d.\/]+)/i)
       if (ldM) { linkData = ldM[1]; continue }
-
       const metM = t.match(/TOS\s*:?\s*0\s+Metrics?:\s*(\d+)/i)
       if (metM) { metric = parseInt(metM[1]); continue }
-
       const metM2 = t.match(/^Metric:\s*(\d+)/i)
       if (metM2 && metric === 0) { metric = parseInt(metM2[1]); continue }
     }
@@ -468,14 +667,12 @@ function splitLSABlocks(lines: string[]): LSABlock[] {
       blocks.push({ isAreaHeader: true, area: areaM[1], lines: [] })
       continue
     }
-
     const isLSAStart = /^\s*LS age:\s*(?:\d+|MAXAGE\(\d+\))/i.test(line)
     if (isLSAStart) {
       flushCurrent()
       current = [line]
       continue
     }
-
     if (current !== null) current.push(line)
   }
 
@@ -492,7 +689,6 @@ function parseSummaryLSAs(lines: string[]): OSPFSummaryRoute[] {
 
   for (const block of blocks) {
     if (block.isAreaHeader) { currentArea = block.area!; continue }
-
     const isType3 = block.lines.some((l) => /LS Type:\s*Summary Links\s*\(Network\)/i.test(l))
     const isType4 = block.lines.some((l) => /LS Type:\s*Summary Links\s*\(AS Boundary Router\)/i.test(l))
     if (!isType3 && !isType4) continue
@@ -524,14 +720,9 @@ function parseSummaryLSAs(lines: string[]): OSPFSummaryRoute[] {
 
     if (network && advertisingRouter) {
       result.push({
-        network,
-        mask,
-        cost,
-        area: currentArea,
+        network, mask, cost, area: currentArea,
         lsaType: isType4 ? "ASBR Summary LSA (Type 4)" : "Summary LSA (Type 3)",
-        advertisingRouter,
-        seqNumber,
-        age,
+        advertisingRouter, seqNumber, age,
       })
     }
   }
@@ -585,34 +776,28 @@ function parseExternalLSAs(lines: string[]): OSPFExternalRoute[] {
     }
 
     if (network && advertisingRouter) {
-      result.push({
-        network,
-        mask,
-        metric,
-        metricType,
-        tag,
-        forwardingAddress,
-        advertisingRouter,
-        seqNumber,
-        age,
-      })
+      result.push({ network, mask, metric, metricType, tag, forwardingAddress, advertisingRouter, seqNumber, age })
     }
   }
 
   return result
 }
 
+// ─── Dedup helper ───────────────────────────────────────────
+
 function dedup(links: OSPFLink[]): OSPFLink[] {
   const seen = new Map<string, OSPFLink>()
-  for (const l of links) {
-    const key = [l.source, l.target].sort().join("|") + "|" + l.linkType
-    if (!seen.has(key)) {
-      seen.set(key, l)
+  for (const link of links) {
+    const key = `${[link.source, link.target].sort().join("|")}|${link.linkType}`
+    const existing = seen.get(key)
+    if (!existing) {
+      seen.set(key, { ...link })
     } else {
-      // Keep the entry with more information (prefer one with cost > 0)
-      const existing = seen.get(key)!
-      if (l.cost > 0 && existing.cost === 0) seen.set(key, l)
-      if (l.interfaceInfo && !existing.interfaceInfo) existing.interfaceInfo = l.interfaceInfo
+      // Keep the entry with the most info
+      if (link.cost > 0 && existing.cost === 0) existing.cost = link.cost
+      if (link.sourceCost > 0 && existing.sourceCost === 0) existing.sourceCost = link.sourceCost
+      if (link.targetCost > 0 && existing.targetCost === 0) existing.targetCost = link.targetCost
+      if (link.interfaceInfo && !existing.interfaceInfo) existing.interfaceInfo = link.interfaceInfo
     }
   }
   return Array.from(seen.values())

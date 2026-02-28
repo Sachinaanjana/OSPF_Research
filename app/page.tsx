@@ -13,7 +13,7 @@ import { SystemIdManager } from "@/components/system-id-manager"
 import { SystemIdInlinePanel } from "@/components/system-id-inline-panel"
 import { EmptyState } from "@/components/empty-state"
 import { TopologySearch } from "@/components/topology-search"
-import { parseOSPFData } from "@/lib/ospf-parser"
+import { parseOSPFData, type MultiCommandInput } from "@/lib/ospf-parser"
 import { buildGraph, computeAutoFit } from "@/lib/layout-engine"
 import { usePolling } from "@/lib/polling-client"
 import { diffTopologies, applyNodeStatuses, applyEdgeStatuses } from "@/lib/topology-diff"
@@ -41,7 +41,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 
 export default function Page() {
   // ── Core topology state ──
-  const [inputText, setInputText] = useState("")
+  const [multiInput, setMultiInput] = useState<MultiCommandInput>({})
   const [isParsing, setIsParsing] = useState(false)
   const [parseError, setParseError] = useState<string | null>(null)
   const [topology, setTopology] = useState<OSPFTopology | null>(null)
@@ -155,21 +155,21 @@ export default function Page() {
 
   // ── Parse handler ──
   const handleParse = useCallback(() => {
-    if (!inputText.trim()) return
+    const hasAnyInput = Object.values(multiInput).some(v => v?.trim())
+    if (!hasAnyInput) return
     setIsParsing(true)
     setParseError(null)
     const { width, height } = canvasSizeRef.current
 
     setTimeout(() => {
       try {
-        const parsed = parseOSPFData(inputText)
+        const parsed = parseOSPFData(multiInput)
         if (parsed.routers.length === 0 && parsed.networks.length === 0) {
-          setParseError("No OSPF data found. Make sure the input contains valid OSPF LSA data (e.g. output of 'show ip ospf database').")
+          setParseError("No OSPF data found. Make sure the input contains valid OSPF LSA data.")
           setIsParsing(false)
           return
         }
 
-        // Diff against previous topology if exists
         if (topology) {
           const changes = diffTopologies(topology, parsed)
           if (changes.length > 0) {
@@ -201,23 +201,24 @@ export default function Page() {
       }
       setIsParsing(false)
     }, 50)
-  },     [inputText, layout, spacingMultiplier, topology, nodes, edges, notifyChanges, autoFitView])
+  }, [multiInput, layout, spacingMultiplier, topology, nodes, edges, notifyChanges, autoFitView])
 
   // ── SSH data received ──
   const handleSSHData = useCallback(
     (data: string, host: string) => {
-      setInputText(data)
+      // SSH data is treated as combined database output (raw)
+      const input: MultiCommandInput = { raw: data }
+      setMultiInput(input)
       setParseError(null)
       const { width, height } = canvasSizeRef.current
 
       try {
-        const parsed = parseOSPFData(data)
+        const parsed = parseOSPFData(input)
         if (parsed.routers.length === 0 && parsed.networks.length === 0) {
           setParseError("Connected but no OSPF data found on " + host)
           return
         }
 
-        // Diff if we have a previous topology
         if (topology) {
           const changes = diffTopologies(topology, parsed)
           if (changes.length > 0) {
@@ -246,7 +247,6 @@ export default function Page() {
         setFilterLinkType(null)
         toast.success(`Loaded ${parsed.routers.length} routers from ${host}`)
 
-        // Auto-save SSH snapshots to DB
         fetch("/api/snapshots", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -267,7 +267,7 @@ export default function Page() {
 
   // ── Clear ──
   const handleClear = useCallback(() => {
-    setInputText("")
+    setMultiInput({})
     setTopology(null)
     setNodes([])
     setEdges([])
@@ -291,7 +291,7 @@ export default function Page() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           topology,
-          raw_text: inputText || null,
+          raw_text: multiInput.raw || multiInput.showIpOspfDatabaseRouter || null,
           source: "manual",
           name: `Snapshot — ${topology.routers.length} routers`,
         }),
@@ -303,7 +303,7 @@ export default function Page() {
     } finally {
       setIsSaving(false)
     }
-  }, [topology, inputText])
+  }, [topology, multiInput])
 
   // ── Load snapshot from DB ──
   const handleLoadSnapshot = useCallback(
@@ -316,7 +316,7 @@ export default function Page() {
         setTopology(parsed)
         setNodes(graph.nodes)
         setEdges(graph.edges)
-        if (rawText) setInputText(rawText)
+        if (rawText) setMultiInput({ raw: rawText })
         setSelectedNodeId(null)
         setSelectedEdgeId(null)
         setFilterArea(null)
@@ -572,8 +572,8 @@ export default function Page() {
               {leftTab === "input" ? (
                 <ScrollArea className="flex-1">
                   <InputPanel
-                    value={inputText}
-                    onChange={setInputText}
+                    value={multiInput}
+                    onChange={setMultiInput}
                     onParse={handleParse}
                     onClear={handleClear}
                     onSSHData={handleSSHData}

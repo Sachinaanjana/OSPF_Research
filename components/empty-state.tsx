@@ -23,11 +23,13 @@ export function EmptyState() {
         <div className="w-full flex flex-col gap-2.5">
           <div className="flex items-start gap-3 rounded-lg bg-secondary/30 border border-border px-4 py-3 text-left">
             <Terminal className="w-4 h-4 text-primary mt-0.5 shrink-0" />
-            <div>
+            <div className="flex flex-col gap-0.5">
               <p className="text-xs font-medium text-foreground">Cisco IOS / IOS-XE</p>
-              <code className="text-[11px] font-mono text-muted-foreground">
-                show ip ospf database
-              </code>
+              <code className="text-[11px] font-mono text-muted-foreground">show ip ospf database router</code>
+              <code className="text-[11px] font-mono text-muted-foreground">show ip ospf database network</code>
+              <code className="text-[11px] font-mono text-muted-foreground">show ip ospf neighbor</code>
+              <code className="text-[11px] font-mono text-muted-foreground">show ip ospf interface</code>
+              <code className="text-[11px] font-mono text-muted-foreground">show ip route ospf</code>
             </div>
           </div>
           <div className="flex items-start gap-3 rounded-lg bg-secondary/30 border border-border px-4 py-3 text-left">
