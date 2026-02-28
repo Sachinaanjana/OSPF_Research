@@ -512,7 +512,7 @@ export default function Page() {
 
   // ── Render ──
   return (
-    <div className="flex flex-col h-screen overflow-hidden bg-background">
+    <div className="flex flex-col h-screen overflow-hidden bg-background" suppressHydrationWarning>
       <AppHeader pollingState={pollingState} />
 
       <div className="flex flex-1 overflow-hidden">
