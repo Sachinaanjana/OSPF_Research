@@ -10,6 +10,7 @@ import { ControlPanel } from "@/components/control-panel"
 import { DetailsPanel } from "@/components/details-panel"
 import { RouterTable } from "@/components/router-table"
 import { SystemIdManager } from "@/components/system-id-manager"
+import { SystemIdInlinePanel } from "@/components/system-id-inline-panel"
 import { EmptyState } from "@/components/empty-state"
 import { TopologySearch } from "@/components/topology-search"
 import { parseOSPFData } from "@/lib/ospf-parser"
@@ -67,7 +68,7 @@ export default function Page() {
   const [showRightPanel, setShowRightPanel] = useState(true)
 
   // ── Left panel tab ──
-  const [leftTab, setLeftTab] = useState<"input" | "snapshots">("input")
+  const [leftTab, setLeftTab] = useState<"input" | "snapshots" | "systemids">("input")
   const [isSaving, setIsSaving] = useState(false)
 
   // ── Right panel tab ──
@@ -538,6 +539,22 @@ export default function Page() {
                   Input
                 </button>
                 <button
+                  onClick={() => setLeftTab("systemids")}
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium transition-colors ${
+                    leftTab === "systemids"
+                      ? "text-foreground border-b-2 border-primary bg-card"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <Tag className="w-3.5 h-3.5" />
+                  System IDs
+                  {Object.keys(systemIds).length > 0 && (
+                    <span className="bg-primary text-primary-foreground rounded-full px-1.5 py-0.5 text-[9px] font-bold leading-none">
+                      {Object.keys(systemIds).length}
+                    </span>
+                  )}
+                </button>
+                <button
                   onClick={() => setLeftTab("snapshots")}
                   className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium transition-colors ${
                     leftTab === "snapshots"
@@ -562,6 +579,12 @@ export default function Page() {
                     parseError={parseError}
                   />
                 </ScrollArea>
+              ) : leftTab === "systemids" ? (
+                <SystemIdInlinePanel
+                  nodes={nodes}
+                  systemIds={systemIds}
+                  onSystemIdsChange={setSystemIds}
+                />
               ) : (
                 <SnapshotsPanel
                   onLoadSnapshot={handleLoadSnapshot}
