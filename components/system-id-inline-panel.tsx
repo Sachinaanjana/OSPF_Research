@@ -3,8 +3,24 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from "react"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { X, Trash2, Download, Upload, CheckCircle2, Loader2 } from "lucide-react"
+import { X, Trash2, Download, Upload } from "lucide-react"
 import type { GraphNode } from "@/lib/ospf-types"
+
+const LS_KEY = "ospf_system_ids"
+
+function loadFromStorage(): Record<string, string> {
+  if (typeof window === "undefined") return {}
+  try {
+    return JSON.parse(localStorage.getItem(LS_KEY) ?? "{}") as Record<string, string>
+  } catch {
+    return {}
+  }
+}
+
+function saveToStorage(ids: Record<string, string>) {
+  if (typeof window === "undefined") return
+  localStorage.setItem(LS_KEY, JSON.stringify(ids))
+}
 
 interface SystemIdInlinePanelProps {
   nodes: GraphNode[]
@@ -16,65 +32,24 @@ export function SystemIdInlinePanel({ nodes, systemIds, onSystemIdsChange }: Sys
   const [search, setSearch] = useState("")
   const [bulkMode, setBulkMode] = useState(false)
   const [bulkText, setBulkText] = useState("")
-  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle")
   const [localIds, setLocalIds] = useState<Record<string, string>>({})
   const [loaded, setLoaded] = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Load all system IDs from DB on mount
+  // Load from localStorage on mount
   useEffect(() => {
-    fetch("/api/system-ids")
-      .then((r) => r.json())
-      .then((data: Record<string, string>) => {
-        setLocalIds(data)
-        onSystemIdsChange(data)
-        setLoaded(true)
-      })
-      .catch(() => {
-        // Fallback to parent state if DB fails
-        setLocalIds({ ...systemIds })
-        setLoaded(true)
-      })
+    const stored = loadFromStorage()
+    setLocalIds(stored)
+    onSystemIdsChange(stored)
+    setLoaded(true)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // When parent resets (e.g. load snapshot), sync down
+  // Sync down when parent provides new systemIds (e.g. load snapshot)
   useEffect(() => {
     if (!loaded) return
     setLocalIds((prev) => ({ ...prev, ...systemIds }))
   }, [systemIds, loaded])
-
-  const persistToDb = useCallback(async (ids: Record<string, string>) => {
-    setSaveState("saving")
-    try {
-      await fetch("/api/system-ids", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ entries: ids }),
-      })
-      setSaveState("saved")
-      setTimeout(() => setSaveState("idle"), 2000)
-    } catch {
-      setSaveState("error")
-      setTimeout(() => setSaveState("idle"), 3000)
-    }
-  }, [])
-
-  const deleteFromDb = useCallback(async (routerId: string) => {
-    await fetch("/api/system-ids", {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ routerId }),
-    })
-  }, [])
-
-  const clearAllFromDb = useCallback(async () => {
-    await fetch("/api/system-ids", {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    })
-  }, [])
 
   const routerNodes = useMemo(() => nodes.filter((n) => n.type === "router"), [nodes])
 
@@ -99,21 +74,17 @@ export function SystemIdInlinePanel({ nodes, systemIds, onSystemIdsChange }: Sys
     const next = { ...localIds }
     if (!value.trim()) {
       delete next[routerId]
-      deleteFromDb(routerId)
     } else {
       next[routerId] = value
     }
     setLocalIds(next)
     onSystemIdsChange(next)
 
-    // Debounce save to DB — 600ms after last keystroke
-    if (value.trim()) {
-      if (debounceRef.current) clearTimeout(debounceRef.current)
-      debounceRef.current = setTimeout(() => {
-        persistToDb({ [routerId]: value.trim() })
-      }, 600)
-    }
-  }, [localIds, onSystemIdsChange, persistToDb, deleteFromDb])
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      saveToStorage(next)
+    }, 400)
+  }, [localIds, onSystemIdsChange])
 
   const handleBulkApply = () => {
     const updated = { ...localIds }
@@ -126,7 +97,7 @@ export function SystemIdInlinePanel({ nodes, systemIds, onSystemIdsChange }: Sys
     }
     setLocalIds(updated)
     onSystemIdsChange(updated)
-    persistToDb(updated)
+    saveToStorage(updated)
     setBulkText("")
     setBulkMode(false)
   }
@@ -137,14 +108,12 @@ export function SystemIdInlinePanel({ nodes, systemIds, onSystemIdsChange }: Sys
       .map(([k, v]) => `${k}=${v}`)
       .join("\n")
     navigator.clipboard.writeText(text)
-    setSaveState("saved")
-    setTimeout(() => setSaveState("idle"), 2000)
   }
 
-  const handleClearAll = async () => {
+  const handleClearAll = () => {
     setLocalIds({})
     onSystemIdsChange({})
-    await clearAllFromDb()
+    saveToStorage({})
   }
 
   const namedCount = Object.values(localIds).filter(Boolean).length
@@ -157,16 +126,14 @@ export function SystemIdInlinePanel({ nodes, systemIds, onSystemIdsChange }: Sys
           <div>
             <p className="text-xs font-semibold text-foreground">System ID Mapping</p>
             <p className="text-[10px] text-muted-foreground mt-0.5">
-              {!loaded ? "Loading from database..." :
-                routerNodes.length > 0
-                  ? `${namedCount} of ${routerNodes.length} routers named`
-                  : `${namedCount} pre-mapped entries`}
+              {!loaded
+                ? "Loading..."
+                : routerNodes.length > 0
+                ? `${namedCount} of ${routerNodes.length} routers named`
+                : `${namedCount} pre-mapped entries`}
             </p>
           </div>
           <div className="flex items-center gap-1.5">
-            {saveState === "saving" && <Loader2 className="w-3.5 h-3.5 text-muted-foreground animate-spin" />}
-            {saveState === "saved" && <CheckCircle2 className="w-3.5 h-3.5 text-green-400" />}
-            {saveState === "error" && <span className="text-[10px] text-destructive">Save failed</span>}
             <button
               onClick={() => setBulkMode(!bulkMode)}
               title="Bulk input (routerId=Name)"
@@ -211,7 +178,7 @@ export function SystemIdInlinePanel({ nodes, systemIds, onSystemIdsChange }: Sys
                 onClick={handleBulkApply}
                 className="flex-1 h-7 text-xs font-medium bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
               >
-                Apply & Save
+                Apply
               </button>
               <button
                 onClick={() => { setBulkMode(false); setBulkText("") }}
@@ -243,19 +210,13 @@ export function SystemIdInlinePanel({ nodes, systemIds, onSystemIdsChange }: Sys
                 Pre-mapped
               </p>
               {manualOnly.map((rid) => (
-                <RouterRow
-                  key={rid}
-                  routerId={rid}
-                  value={localIds[rid] ?? ""}
-                  onChange={handleChange}
-                  highlight
-                />
+                <RouterRow key={rid} routerId={rid} value={localIds[rid] ?? ""} onChange={handleChange} highlight />
               ))}
               {routerNodes.length > 0 && <div className="h-px bg-border my-2" />}
             </>
           )}
 
-          {/* No topology — free-form row */}
+          {/* No topology — free-form entry */}
           {routerNodes.length === 0 && loaded && (
             <div className="px-1 pt-2">
               <p className="text-[10px] text-muted-foreground mb-3 leading-relaxed">
@@ -265,26 +226,14 @@ export function SystemIdInlinePanel({ nodes, systemIds, onSystemIdsChange }: Sys
             </div>
           )}
 
-          {/* Topology rows */}
           {filtered.length === 0 && routerNodes.length > 0 && (
             <p className="text-xs text-muted-foreground text-center py-6">No routers match</p>
           )}
           {filtered.map((node) => (
-            <RouterRow
-              key={node.id}
-              routerId={node.id}
-              value={localIds[node.id] ?? ""}
-              onChange={handleChange}
-            />
+            <RouterRow key={node.id} routerId={node.id} value={localIds[node.id] ?? ""} onChange={handleChange} />
           ))}
         </div>
       </ScrollArea>
-
-      {routerNodes.length === 0 && loaded && (
-        <div className="px-4 py-2 border-t border-border shrink-0 text-center">
-          <p className="text-[9px] text-muted-foreground">Saved to database automatically</p>
-        </div>
-      )}
     </div>
   )
 }
