@@ -148,6 +148,16 @@ export function parseOSPFData(input: string): OSPFTopology {
     if (p.ifInfo && !srcRouter.neighborInterfaces[p.tgtId]) {
       srcRouter.neighborInterfaces[p.tgtId] = p.ifInfo
     }
+    // Also store interface on the target side pointing back to source
+    if (p.ifInfo && !tgtRouter.neighborInterfaces[p.srcId]) {
+      tgtRouter.neighborInterfaces[p.srcId] = p.ifInfo
+    }
+    // Record interface entry on target router too
+    if (p.ifInfo && !tgtRouter.interfaces.some(i => i.connectedTo === p.srcId && i.linkType === "point-to-point")) {
+      tgtRouter.interfaces.push({ address: p.ifInfo, connectedTo: p.srcId, linkType: "point-to-point", cost: p.tgtCost })
+    }
+
+    console.log("[v0] P2P link:", p.srcId, "<->", p.tgtId, "src neighbors:", srcRouter.neighbors, "tgt neighbors:", tgtRouter.neighbors)
 
     links.push({
       id: `p2p-${p.srcId}-${p.tgtId}`,
@@ -223,6 +233,20 @@ export function parseOSPFData(input: string): OSPFTopology {
     if (!router.lsaTypes.includes("AS External LSA (Type 5)")) router.lsaTypes.push("AS External LSA (Type 5)")
     if (router.role === "internal") router.role = "asbr"
     router.externalRoutes.push(e)
+  }
+
+  // ── Debug: trace specific router ─────────────────────────
+  const debugRouter = routerMap.get("203.143.61.7")
+  if (debugRouter) {
+    console.log("[v0] 203.143.61.7 found in routerMap:", JSON.stringify({
+      neighbors: debugRouter.neighbors,
+      neighborInterfaces: debugRouter.neighborInterfaces,
+      interfaces: debugRouter.interfaces,
+      networks: debugRouter.networks,
+      lsaTypes: debugRouter.lsaTypes,
+    }, null, 2))
+  } else {
+    console.log("[v0] 203.143.61.7 NOT found in routerMap at all")
   }
 
   return {
