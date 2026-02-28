@@ -8,9 +8,12 @@ import { SnapshotsPanel } from "@/components/snapshots-panel"
 import { TopologyCanvas } from "@/components/topology-canvas"
 import { ControlPanel } from "@/components/control-panel"
 import { DetailsPanel } from "@/components/details-panel"
+import { RouterTable } from "@/components/router-table"
+import { SystemIdManager } from "@/components/system-id-manager"
+import { SystemIdInlinePanel } from "@/components/system-id-inline-panel"
 import { EmptyState } from "@/components/empty-state"
 import { TopologySearch } from "@/components/topology-search"
-import { parseOSPFData } from "@/lib/ospf-parser"
+import { parseOSPFData, type MultiCommandInput } from "@/lib/ospf-parser"
 import { buildGraph, computeAutoFit } from "@/lib/layout-engine"
 import { usePolling } from "@/lib/polling-client"
 import { diffTopologies, applyNodeStatuses, applyEdgeStatuses } from "@/lib/topology-diff"
@@ -30,12 +33,15 @@ import {
   ChevronRight,
   FileText,
   Database,
+  List,
+  ArrowRightLeft,
+  Tag,
 } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
 export default function Page() {
   // ── Core topology state ──
-  const [inputText, setInputText] = useState("")
+  const [multiInput, setMultiInput] = useState<MultiCommandInput>({})
   const [isParsing, setIsParsing] = useState(false)
   const [parseError, setParseError] = useState<string | null>(null)
   const [topology, setTopology] = useState<OSPFTopology | null>(null)
@@ -62,8 +68,16 @@ export default function Page() {
   const [showRightPanel, setShowRightPanel] = useState(true)
 
   // ── Left panel tab ──
-  const [leftTab, setLeftTab] = useState<"input" | "snapshots">("input")
+  const [leftTab, setLeftTab] = useState<"input" | "snapshots" | "systemids">("input")
   const [isSaving, setIsSaving] = useState(false)
+
+  // ── Right panel tab ──
+  const [rightTab, setRightTab] = useState<"details" | "routers">("details")
+
+  // ── System IDs (manually assigned names per router) ──
+  // Populated on mount by SystemIdInlinePanel fetching from DB
+  const [systemIds, setSystemIds] = useState<Record<string, string>>({})
+  const [showSystemIdManager, setShowSystemIdManager] = useState(false)
   const [events, setEvents] = useState<TopologyChange[]>([])
   const canvasSizeRef = useRef({ width: 900, height: 600 })
 
@@ -141,21 +155,21 @@ export default function Page() {
 
   // ── Parse handler ──
   const handleParse = useCallback(() => {
-    if (!inputText.trim()) return
+    const hasAnyInput = Object.values(multiInput).some(v => v?.trim())
+    if (!hasAnyInput) return
     setIsParsing(true)
     setParseError(null)
     const { width, height } = canvasSizeRef.current
 
     setTimeout(() => {
       try {
-        const parsed = parseOSPFData(inputText)
+        const parsed = parseOSPFData(multiInput)
         if (parsed.routers.length === 0 && parsed.networks.length === 0) {
-          setParseError("No OSPF data found. Make sure the input contains valid OSPF LSA data (e.g. output of 'show ip ospf database').")
+          setParseError("No OSPF data found. Make sure the input contains valid OSPF LSA data.")
           setIsParsing(false)
           return
         }
 
-        // Diff against previous topology if exists
         if (topology) {
           const changes = diffTopologies(topology, parsed)
           if (changes.length > 0) {
@@ -187,23 +201,24 @@ export default function Page() {
       }
       setIsParsing(false)
     }, 50)
-  },     [inputText, layout, spacingMultiplier, topology, nodes, edges, notifyChanges, autoFitView])
+  }, [multiInput, layout, spacingMultiplier, topology, nodes, edges, notifyChanges, autoFitView])
 
   // ── SSH data received ──
   const handleSSHData = useCallback(
     (data: string, host: string) => {
-      setInputText(data)
+      // SSH data is treated as combined database output (raw)
+      const input: MultiCommandInput = { raw: data }
+      setMultiInput(input)
       setParseError(null)
       const { width, height } = canvasSizeRef.current
 
       try {
-        const parsed = parseOSPFData(data)
+        const parsed = parseOSPFData(input)
         if (parsed.routers.length === 0 && parsed.networks.length === 0) {
           setParseError("Connected but no OSPF data found on " + host)
           return
         }
 
-        // Diff if we have a previous topology
         if (topology) {
           const changes = diffTopologies(topology, parsed)
           if (changes.length > 0) {
@@ -232,7 +247,6 @@ export default function Page() {
         setFilterLinkType(null)
         toast.success(`Loaded ${parsed.routers.length} routers from ${host}`)
 
-        // Auto-save SSH snapshots to DB
         fetch("/api/snapshots", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -253,7 +267,7 @@ export default function Page() {
 
   // ── Clear ──
   const handleClear = useCallback(() => {
-    setInputText("")
+    setMultiInput({})
     setTopology(null)
     setNodes([])
     setEdges([])
@@ -277,7 +291,7 @@ export default function Page() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           topology,
-          raw_text: inputText || null,
+          raw_text: multiInput.raw || multiInput.showIpOspfDatabaseRouter || null,
           source: "manual",
           name: `Snapshot — ${topology.routers.length} routers`,
         }),
@@ -289,7 +303,7 @@ export default function Page() {
     } finally {
       setIsSaving(false)
     }
-  }, [topology, inputText])
+  }, [topology, multiInput])
 
   // ── Load snapshot from DB ──
   const handleLoadSnapshot = useCallback(
@@ -302,7 +316,7 @@ export default function Page() {
         setTopology(parsed)
         setNodes(graph.nodes)
         setEdges(graph.edges)
-        if (rawText) setInputText(rawText)
+        if (rawText) setMultiInput({ raw: rawText })
         setSelectedNodeId(null)
         setSelectedEdgeId(null)
         setFilterArea(null)
@@ -500,7 +514,8 @@ export default function Page() {
 
   // ── Render ──
   return (
-    <div className="flex flex-col h-screen overflow-hidden bg-background">
+    <>
+    <div className="flex flex-col h-screen overflow-hidden bg-background" suppressHydrationWarning>
       <AppHeader pollingState={pollingState} />
 
       <div className="flex flex-1 overflow-hidden">
@@ -526,6 +541,22 @@ export default function Page() {
                   Input
                 </button>
                 <button
+                  onClick={() => setLeftTab("systemids")}
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium transition-colors ${
+                    leftTab === "systemids"
+                      ? "text-foreground border-b-2 border-primary bg-card"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <Tag className="w-3.5 h-3.5" />
+                  System IDs
+                  {Object.keys(systemIds).length > 0 && (
+                    <span className="bg-primary text-primary-foreground rounded-full px-1.5 py-0.5 text-[9px] font-bold leading-none">
+                      {Object.keys(systemIds).length}
+                    </span>
+                  )}
+                </button>
+                <button
                   onClick={() => setLeftTab("snapshots")}
                   className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium transition-colors ${
                     leftTab === "snapshots"
@@ -541,8 +572,8 @@ export default function Page() {
               {leftTab === "input" ? (
                 <ScrollArea className="flex-1">
                   <InputPanel
-                    value={inputText}
-                    onChange={setInputText}
+                    value={multiInput}
+                    onChange={setMultiInput}
                     onParse={handleParse}
                     onClear={handleClear}
                     onSSHData={handleSSHData}
@@ -550,6 +581,12 @@ export default function Page() {
                     parseError={parseError}
                   />
                 </ScrollArea>
+              ) : leftTab === "systemids" ? (
+                <SystemIdInlinePanel
+                  nodes={nodes}
+                  systemIds={systemIds}
+                  onSystemIdsChange={setSystemIds}
+                />
               ) : (
                 <SnapshotsPanel
                   onLoadSnapshot={handleLoadSnapshot}
@@ -576,15 +613,30 @@ export default function Page() {
 
         {/* Center - Canvas + Search */}
         <div className="flex-1 flex flex-col relative min-w-0">
-          {/* Search bar overlay */}
+          {/* Search bar + System ID button overlay */}
           {hasTopology && (
-            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 w-[420px]">
-              <TopologySearch
-                nodes={filteredNodes}
-                edges={filteredEdges}
-                onSelectNode={setSelectedNodeId}
-                onFocusNode={handleFocusNode}
-              />
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 w-[500px]">
+              <div className="flex-1">
+                <TopologySearch
+                  nodes={filteredNodes}
+                  edges={filteredEdges}
+                  onSelectNode={setSelectedNodeId}
+                  onFocusNode={handleFocusNode}
+                />
+              </div>
+              <button
+                onClick={() => setShowSystemIdManager(true)}
+                className="flex items-center gap-1.5 h-8 px-3 rounded-md bg-card/90 backdrop-blur-sm border border-border text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-secondary/80 transition-colors shadow-sm shrink-0"
+                title="Manage System IDs"
+              >
+                <Tag className="w-3.5 h-3.5" />
+                System IDs
+                {Object.keys(systemIds).length > 0 && (
+                  <span className="ml-0.5 bg-primary text-primary-foreground rounded-full px-1.5 py-0.5 text-[9px] font-bold leading-none">
+                    {Object.keys(systemIds).length}
+                  </span>
+                )}
+              </button>
             </div>
           )}
 
@@ -601,6 +653,7 @@ export default function Page() {
               zoom={zoom}
               panX={panX}
               panY={panY}
+              systemIds={systemIds}
               onSelectNode={setSelectedNodeId}
               onSelectEdge={setSelectedEdgeId}
               onZoomChange={setZoom}
@@ -625,68 +678,120 @@ export default function Page() {
           )}
         </button>
 
-        {/* Right panel - Controls + Details */}
+        {/* Right panel - Controls + Details + Router Table */}
         <div
           className={`flex border-l border-border bg-card transition-all duration-200 ${
             showRightPanel ? "w-72" : "w-0"
           } overflow-hidden shrink-0`}
         >
           {showRightPanel && (
-            <div className="flex flex-col w-72">
-              {(selectedNode || selectedEdge) && (
-                <div className="border-b border-border h-[300px] shrink-0">
-                  <DetailsPanel
-                    selectedNode={selectedNode}
-                    selectedEdge={selectedEdge}
-                    nodes={filteredNodes}
-                    onClose={() => { setSelectedNodeId(null); setSelectedEdgeId(null) }}
-                  />
-                </div>
-              )}
-              <ScrollArea className="flex-1">
-                <ControlPanel
-                  layout={layout}
-                  showLabels={showLabels}
-                  showMetrics={showMetrics}
-                  colorBy={colorBy}
-                  areas={areas}
-                  filterArea={filterArea}
-                  filterLinkType={filterLinkType}
-                  onLayoutChange={handleLayoutChange}
-                  onShowLabelsChange={setShowLabels}
-                  onShowMetricsChange={setShowMetrics}
-                  onColorByChange={setColorBy}
-                  onFilterAreaChange={setFilterArea}
-                  onFilterLinkTypeChange={setFilterLinkType}
-                  onExportPNG={() => {
-                    const canvas = document.querySelector("canvas")
-                    if (!canvas) return
-                    const link = document.createElement("a")
-                    link.download = `ospf-topology-${Date.now()}.png`
-                    link.href = canvas.toDataURL("image/png")
-                    link.click()
-                  }}
-                  onResetView={() => autoFitView(nodes)}
-                  nodeCount={filteredNodes.length}
-                  edgeCount={filteredEdges.length}
-                  pollingState={pollingState}
-                  onStartPolling={startPolling}
-                  onStopPolling={stopPolling}
-                  onSetPollingInterval={setPollingInterval}
-                  events={events}
+            <div className="flex flex-col w-72 h-full">
+              {/* Tab switcher */}
+              <div className="flex border-b border-border shrink-0">
+                <button
+                  onClick={() => setRightTab("details")}
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium transition-colors ${
+                    rightTab === "details"
+                      ? "text-foreground border-b-2 border-primary bg-card"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <ArrowRightLeft className="w-3.5 h-3.5" />
+                  Details
+                </button>
+                <button
+                  onClick={() => setRightTab("routers")}
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium transition-colors ${
+                    rightTab === "routers"
+                      ? "text-foreground border-b-2 border-primary bg-card"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <List className="w-3.5 h-3.5" />
+                  Routers
+                </button>
+              </div>
+
+              {rightTab === "routers" ? (
+                <RouterTable
                   nodes={filteredNodes}
-                  allNodes={nodes}
-                  allEdges={edges}
-                  spacingMultiplier={spacingMultiplier}
-                  onSpacingChange={handleSpacingChange}
-                  viewFilter={viewFilter}
-                  onViewFilterChange={setViewFilter}
+                  onSelectNode={(id) => {
+                    setSelectedNodeId(id)
+                    setRightTab("details")
+                    // Also focus/zoom to the node
+                    handleFocusNode(id)
+                  }}
                 />
-              </ScrollArea>
+              ) : (
+                <>
+                  {(selectedNode || selectedEdge) && (
+                    <div className="border-b border-border h-[300px] shrink-0">
+                      <DetailsPanel
+                        selectedNode={selectedNode}
+                        selectedEdge={selectedEdge}
+                        nodes={filteredNodes}
+                        systemIds={systemIds}
+                        onClose={() => { setSelectedNodeId(null); setSelectedEdgeId(null) }}
+                      />
+                    </div>
+                  )}
+                  <ScrollArea className="flex-1">
+                    <ControlPanel
+                      layout={layout}
+                      showLabels={showLabels}
+                      showMetrics={showMetrics}
+                      colorBy={colorBy}
+                      areas={areas}
+                      filterArea={filterArea}
+                      filterLinkType={filterLinkType}
+                      onLayoutChange={handleLayoutChange}
+                      onShowLabelsChange={setShowLabels}
+                      onShowMetricsChange={setShowMetrics}
+                      onColorByChange={setColorBy}
+                      onFilterAreaChange={setFilterArea}
+                      onFilterLinkTypeChange={setFilterLinkType}
+                      onExportPNG={() => {
+                        const canvas = document.querySelector("canvas")
+                        if (!canvas) return
+                        const link = document.createElement("a")
+                        link.download = `ospf-topology-${Date.now()}.png`
+                        link.href = canvas.toDataURL("image/png")
+                        link.click()
+                      }}
+                      onResetView={() => autoFitView(nodes)}
+                      nodeCount={filteredNodes.length}
+                      edgeCount={filteredEdges.length}
+                      pollingState={pollingState}
+                      onStartPolling={startPolling}
+                      onStopPolling={stopPolling}
+                      onSetPollingInterval={setPollingInterval}
+                      events={events}
+                      nodes={filteredNodes}
+                      allNodes={nodes}
+                      allEdges={edges}
+                      spacingMultiplier={spacingMultiplier}
+                      onSpacingChange={handleSpacingChange}
+                      viewFilter={viewFilter}
+                      onViewFilterChange={setViewFilter}
+                    />
+                  </ScrollArea>
+                </>
+              )}
             </div>
           )}
         </div>
       </div>
     </div>
+
+      {/* System ID Manager dialog */}
+      {showSystemIdManager && (
+        <SystemIdManager
+          nodes={nodes}
+          systemIds={systemIds}
+          onSystemIdsChange={setSystemIds}
+          onClose={() => setShowSystemIdManager(false)}
+        />
+      )}
+    </>
   )
 }

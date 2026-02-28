@@ -19,10 +19,10 @@ export function getAreaColor(area: string): string {
 }
 
 function computeLayoutSize(nodeCount: number, baseWidth: number, baseHeight: number, spacingMultiplier = 1) {
-  // Base spacing per node — scales down for very large graphs, multiplied by user control
-  const baseSpacing = nodeCount > 200 ? 110 : nodeCount > 100 ? 130 : 160
+  // Scale spacing down for large graphs, multiplied by user slider
+  const baseSpacing = nodeCount > 250 ? 100 : nodeCount > 200 ? 110 : nodeCount > 100 ? 130 : 160
   const spacingPerNode = baseSpacing * spacingMultiplier
-  const minArea = baseWidth * baseHeight
+  const minArea = baseWidth * baseHeight * 1.5  // ensure canvas is always bigger than viewport
   const desiredArea = Math.max(minArea, nodeCount * spacingPerNode * spacingPerNode)
   const aspect = baseWidth / baseHeight
   const h = Math.sqrt(desiredArea / aspect)
@@ -181,9 +181,9 @@ function forceDirectedLayout(nodes: GraphNode[], edges: GraphEdge[], width: numb
   // Copy positions to typed arrays
   for (let i = 0; i < n; i++) { px[i] = nodes[i].x; py[i] = nodes[i].y }
 
-  const repulsion = Math.max(20000, n * 400)
-  const attraction = 0.004
-  const minDist = nodeSpacing * 0.5
+  const repulsion = Math.max(25000, n * 500)
+  const attraction = 0.003
+  const minDist = nodeSpacing * 0.55
 
   // Adaptive iterations: more for large graphs to ensure convergence
   const iterations = n > 200 ? 150 : n > 100 ? 180 : 220
@@ -304,7 +304,8 @@ function forceDirectedLayout(nodes: GraphNode[], edges: GraphEdge[], width: numb
 
     // Apply velocities
     const maxSpeed = 50 * temp + 5
-    const margin = 60
+    // Use a larger margin so nodes never pile up at canvas edges
+    const margin = Math.max(100, nodeSpacing)
     for (let i = 0; i < n; i++) {
       vx[i] *= damping
       vy[i] *= damping
@@ -333,27 +334,61 @@ function forceDirectedLayout(nodes: GraphNode[], edges: GraphEdge[], width: numb
   }
 }
 
+/**
+ * Fast grid-based overlap resolution — O(N × k) per pass where k = avg nodes per cell.
+ * Replaces the O(N²) naive version which was locking the JS thread at 300+ nodes.
+ */
 function resolveOverlaps(px: Float64Array, py: Float64Array, n: number, minDist: number, passes: number) {
-  for (let p = 0; p < passes; p++) {
+  const cellSize = minDist * 1.5
+
+  for (let pass = 0; pass < passes; pass++) {
+    // Build spatial grid
+    const grid = new Map<string, number[]>()
+    for (let i = 0; i < n; i++) {
+      const cx = Math.floor(px[i] / cellSize)
+      const cy = Math.floor(py[i] / cellSize)
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          const key = `${cx + dx},${cy + dy}`
+          if (!grid.has(key)) grid.set(key, [])
+          // Only add to own cell to avoid double-processing
+          if (dx === 0 && dy === 0) grid.get(key)!.push(i)
+        }
+      }
+    }
+
     let moved = false
     for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        const dx = px[j] - px[i]
-        const dy = py[j] - py[i]
-        const dist = Math.sqrt(dx * dx + dy * dy)
-        if (dist < minDist && dist > 0) {
-          const overlap = (minDist - dist) / 2
-          const nx = dx / dist
-          const ny = dy / dist
-          px[i] -= nx * overlap
-          py[i] -= ny * overlap
-          px[j] += nx * overlap
-          py[j] += ny * overlap
-          moved = true
-        } else if (dist === 0) {
-          px[j] += (Math.random() - 0.5) * minDist
-          py[j] += (Math.random() - 0.5) * minDist
-          moved = true
+      const cx = Math.floor(px[i] / cellSize)
+      const cy = Math.floor(py[i] / cellSize)
+
+      // Check 3x3 neighbourhood
+      for (let dcx = -1; dcx <= 1; dcx++) {
+        for (let dcy = -1; dcy <= 1; dcy++) {
+          const neighbours = grid.get(`${cx + dcx},${cy + dcy}`)
+          if (!neighbours) continue
+          for (const j of neighbours) {
+            if (j <= i) continue
+            const ddx = px[j] - px[i]
+            const ddy = py[j] - py[i]
+            const dist = Math.sqrt(ddx * ddx + ddy * ddy)
+            if (dist < minDist && dist > 0) {
+              const overlap = (minDist - dist) / 2 + 0.5
+              const nx = ddx / dist
+              const ny = ddy / dist
+              px[i] -= nx * overlap
+              py[i] -= ny * overlap
+              px[j] += nx * overlap
+              py[j] += ny * overlap
+              moved = true
+            } else if (dist === 0) {
+              // Deterministic jitter based on index to avoid randomness
+              const angle = (i * 2.399) % (2 * Math.PI)
+              px[j] += Math.cos(angle) * minDist * 0.5
+              py[j] += Math.sin(angle) * minDist * 0.5
+              moved = true
+            }
+          }
         }
       }
     }

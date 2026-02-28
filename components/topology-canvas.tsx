@@ -16,6 +16,7 @@ interface TopologyCanvasProps {
   zoom: number
   panX: number
   panY: number
+  systemIds?: Record<string, string>
   onSelectNode: (id: string | null) => void
   onSelectEdge: (id: string | null) => void
   onZoomChange: (zoom: number) => void
@@ -201,6 +202,7 @@ export function TopologyCanvas({
   zoom,
   panX,
   panY,
+  systemIds = {},
   onSelectNode,
   onSelectEdge,
   onZoomChange,
@@ -620,16 +622,33 @@ export function TopologyCanvas({
       // Labels
       if (showLabels && detailLevel !== "minimal") {
         const ly = node.type === "router" ? node.y + 18 : node.y + 14
-        ctx.font = detailLevel === "simple" ? "bold 9px monospace" : "bold 11px monospace"
+        const sysName = node.type === "router" ? (systemIds[node.id] ?? "") : ""
+        const fontSize = detailLevel === "simple" ? 9 : 11
+        ctx.font = `bold ${fontSize}px monospace`
         ctx.textAlign = "center"
         ctx.textBaseline = "top"
+
         const lw = ctx.measureText(node.label).width + 8
+        const sysW = sysName ? ctx.measureText(sysName).width + 8 : 0
+        const bgW = Math.max(lw, sysW)
+        const bgH = sysName ? 30 : 16
+
+        // Background pill
         ctx.fillStyle = "#0d1117cc"
         ctx.beginPath()
-        ctx.roundRect(node.x - lw / 2, ly - 2, lw, 16, 3)
+        ctx.roundRect(node.x - bgW / 2, ly - 2, bgW, bgH, 3)
         ctx.fill()
+
+        // Router ID line
         ctx.fillStyle = "#e2e8f0"
         ctx.fillText(node.label, node.x, ly)
+
+        // System name line (below, amber/highlight color)
+        if (sysName) {
+          ctx.font = `${fontSize - 1}px monospace`
+          ctx.fillStyle = "#fbbf24"
+          ctx.fillText(sysName, node.x, ly + fontSize + 2)
+        }
       }
 
       // Focus highlight ring -- bright pulsing circle when search focuses this node
@@ -726,7 +745,7 @@ export function TopologyCanvas({
     }
 
     ctx.restore()
-  }, [localNodes, edges, selectedNodeId, selectedEdgeId, focusedNodeId, showLabels, showMetrics, colorBy, zoom, panX, panY, canvasSize, getNodeColor, nodeMap, detailLevel, viewport, isInViewport])
+  }, [localNodes, edges, selectedNodeId, selectedEdgeId, focusedNodeId, showLabels, showMetrics, colorBy, zoom, panX, panY, canvasSize, getNodeColor, nodeMap, detailLevel, viewport, isInViewport, systemIds])
 
   useEffect(() => { draw() }, [draw])
 
@@ -904,12 +923,21 @@ export function TopologyCanvas({
         </button>
       </div>
       {/* Node/edge count indicator */}
-      <div className="absolute top-3 left-3 text-[10px] font-mono text-muted-foreground bg-background/80 backdrop-blur-sm rounded px-2 py-1 border border-border">
-        {localNodes.length} nodes / {edges.length} edges
-        {detailLevel !== "detailed" && (
-          <span className="ml-1 text-accent">({detailLevel} mode)</span>
-        )}
-      </div>
+      {localNodes.length > 0 && (
+        <div className="absolute top-3 left-3 flex items-center gap-1.5 text-[10px] font-mono bg-background/90 backdrop-blur-sm rounded-md px-2.5 py-1.5 border border-border shadow-sm">
+          <span className="text-primary font-semibold">{localNodes.filter(n => n.type === "router").length}</span>
+          <span className="text-muted-foreground">routers</span>
+          <span className="text-border">|</span>
+          <span className="text-blue-400 font-semibold">{localNodes.filter(n => n.type === "network").length}</span>
+          <span className="text-muted-foreground">networks</span>
+          <span className="text-border">|</span>
+          <span className="text-muted-foreground font-semibold">{edges.length}</span>
+          <span className="text-muted-foreground">links</span>
+          {detailLevel !== "detailed" && (
+            <span className="ml-1 text-yellow-400 border-l border-border pl-1.5">{detailLevel}</span>
+          )}
+        </div>
+      )}
       {/* Empty state */}
       {localNodes.length === 0 && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
