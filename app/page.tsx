@@ -513,6 +513,7 @@ export default function Page() {
 
   // ── Render ──
   return (
+    <>
     <div className="flex flex-col h-screen overflow-hidden bg-background" suppressHydrationWarning>
       <AppHeader pollingState={pollingState} />
 
@@ -790,5 +791,6 @@ export default function Page() {
           onClose={() => setShowSystemIdManager(false)}
         />
       )}
+    </>
   )
 }
