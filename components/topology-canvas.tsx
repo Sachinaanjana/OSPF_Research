@@ -635,53 +635,90 @@ export function TopologyCanvas({
       // Focus highlight ring -- bright pulsing circle when search focuses this node
       if (node.id === focusedNodeId) {
         const elapsed = Date.now() - focusStartRef.current
-        const FOCUS_DURATION = 6000
+        const FOCUS_DURATION = 8000
         if (elapsed < FOCUS_DURATION) {
           const decay = 1 - elapsed / FOCUS_DURATION
           const pulse = 0.5 + 0.5 * Math.sin(elapsed / 180)
-          const focusColor = "#fbbf24" // amber/yellow
+          const focusColor = "#fbbf24" // amber
 
-          // Outer pulsing ring
-          const outerRadius = 38 + 8 * pulse
+          ctx.save()
+
+          // Radial glow fill
+          const glowR = 55 + 14 * pulse
+          const gradient = ctx.createRadialGradient(node.x, node.y, 0, node.x, node.y, glowR)
+          gradient.addColorStop(0, focusColor + Math.round(decay * 55).toString(16).padStart(2, "0"))
+          gradient.addColorStop(1, focusColor + "00")
+          ctx.fillStyle = gradient
+          ctx.globalAlpha = decay * 0.8
+          ctx.beginPath()
+          ctx.arc(node.x, node.y, glowR, 0, Math.PI * 2)
+          ctx.fill()
+
+          // Outer pulsing dashed ring
+          const outerRadius = 42 + 10 * pulse
           ctx.strokeStyle = focusColor
           ctx.lineWidth = 2.5 * decay
           ctx.globalAlpha = decay * 0.9
-          ctx.setLineDash([6, 4])
+          ctx.setLineDash([8, 5])
           ctx.beginPath()
           ctx.arc(node.x, node.y, outerRadius, 0, Math.PI * 2)
           ctx.stroke()
           ctx.setLineDash([])
 
           // Inner solid ring
-          const innerRadius = 30
           ctx.strokeStyle = focusColor
-          ctx.lineWidth = 2 * decay
+          ctx.lineWidth = 2.5 * decay
           ctx.globalAlpha = decay
           ctx.beginPath()
-          ctx.arc(node.x, node.y, innerRadius, 0, Math.PI * 2)
+          ctx.arc(node.x, node.y, 26, 0, Math.PI * 2)
           ctx.stroke()
 
-          // Radial glow fill
-          const glowR = 45 + 10 * pulse
-          const gradient = ctx.createRadialGradient(node.x, node.y, 0, node.x, node.y, glowR)
-          gradient.addColorStop(0, focusColor + Math.round(decay * 40).toString(16).padStart(2, "0"))
-          gradient.addColorStop(1, focusColor + "00")
-          ctx.fillStyle = gradient
+          // Crosshair lines extending outward
+          const armLen = 18 + 6 * pulse
           ctx.globalAlpha = decay * 0.7
+          ctx.strokeStyle = focusColor
+          ctx.lineWidth = 1.5
           ctx.beginPath()
-          ctx.arc(node.x, node.y, glowR, 0, Math.PI * 2)
+          ctx.moveTo(node.x - 26 - armLen, node.y)
+          ctx.lineTo(node.x - 26, node.y)
+          ctx.moveTo(node.x + 26, node.y)
+          ctx.lineTo(node.x + 26 + armLen, node.y)
+          ctx.moveTo(node.x, node.y - 26 - armLen)
+          ctx.lineTo(node.x, node.y - 26)
+          ctx.moveTo(node.x, node.y + 26)
+          ctx.lineTo(node.x, node.y + 26 + armLen)
+          ctx.stroke()
+
+          // Floating "FOUND" label pinned above the node
+          ctx.globalAlpha = decay
+          ctx.font = "bold 11px system-ui, sans-serif"
+          const tag = `▶  ${node.label}`
+          const tagW = ctx.measureText(tag).width + 16
+          const tagH = 22
+          const tagX = node.x - tagW / 2
+          const tagY = node.y - 70 - 8 * pulse
+
+          // Badge background
+          ctx.fillStyle = "#fbbf24"
+          ctx.beginPath()
+          ctx.roundRect(tagX, tagY, tagW, tagH, 5)
           ctx.fill()
 
-          // Small crosshair at center
-          ctx.globalAlpha = decay * 0.5
-          ctx.strokeStyle = focusColor
-          ctx.lineWidth = 1
+          // Pointer triangle
           ctx.beginPath()
-          ctx.moveTo(node.x - 6, node.y)
-          ctx.lineTo(node.x + 6, node.y)
-          ctx.moveTo(node.x, node.y - 6)
-          ctx.lineTo(node.x, node.y + 6)
-          ctx.stroke()
+          ctx.moveTo(node.x - 6, tagY + tagH)
+          ctx.lineTo(node.x + 6, tagY + tagH)
+          ctx.lineTo(node.x, tagY + tagH + 8)
+          ctx.closePath()
+          ctx.fill()
+
+          // Label text
+          ctx.fillStyle = "#0d1117"
+          ctx.textAlign = "center"
+          ctx.textBaseline = "middle"
+          ctx.fillText(tag, node.x, tagY + tagH / 2)
+
+          ctx.restore()
         }
       }
 
@@ -696,7 +733,7 @@ export function TopologyCanvas({
   // Animation loop for status effects
   useEffect(() => {
     let animFrameId: number | null = null
-    const hasFocusAnim = focusedNodeId && (Date.now() - focusStartRef.current < 6000)
+    const hasFocusAnim = focusedNodeId && (Date.now() - focusStartRef.current < 8000)
     const hasAnimations = hasFocusAnim || localNodes.some(
       (n) => n.status && n.status !== "stable" && n.statusTimestamp
     ) || edges.some(
