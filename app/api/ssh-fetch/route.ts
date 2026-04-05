@@ -173,6 +173,13 @@ export async function POST(request: Request) {
         reject(new Error(`SSH connection failed: ${err.message}`))
       })
 
+      // Handle keyboard-interactive auth (some Cisco IOS versions require this
+      // even with password auth — the router sends a "Password:" challenge)
+      conn.on("keyboard-interactive", (_name, _instructions, _lang, prompts, finish) => {
+        // Respond to every prompt with the password
+        finish(prompts.map(() => password))
+      })
+
       conn.connect({
         host: hostClean,
         port: portNum,
