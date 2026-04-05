@@ -180,27 +180,43 @@ export async function POST(request: Request) {
         password,
         readyTimeout: SSH_TIMEOUT,
         algorithms: {
+          // Key exchange — list every method the router advertises first so
+          // ssh2 will negotiate one successfully even on old Cisco IOS boxes.
           kex: [
+            "diffie-hellman-group-exchange-sha1",   // ← what the router offers
+            "diffie-hellman-group14-sha1",           // ← what the router offers
+            "diffie-hellman-group-exchange-sha256",
+            "diffie-hellman-group14-sha256",
+            "diffie-hellman-group1-sha1",
             "ecdh-sha2-nistp256",
             "ecdh-sha2-nistp384",
             "ecdh-sha2-nistp521",
-            "diffie-hellman-group-exchange-sha256",
-            "diffie-hellman-group14-sha256",
-            "diffie-hellman-group14-sha1",
-            "diffie-hellman-group1-sha1",
+          ],
+          // Host-key — older IOS sends ssh-rsa; Node ≥ 21 / ssh2 ≥ 1.15
+          // disables it by default, so we must re-enable it explicitly.
+          serverHostKey: [
+            "ssh-rsa",
+            "ecdsa-sha2-nistp256",
+            "ecdsa-sha2-nistp384",
+            "ecdsa-sha2-nistp521",
+            "ssh-ed25519",
           ],
           cipher: [
             "aes128-ctr",
             "aes192-ctr",
             "aes256-ctr",
-            "aes128-gcm",
-            "aes256-gcm",
-            "aes256-cbc",
             "aes128-cbc",
+            "aes256-cbc",
             "3des-cbc",
           ],
+          hmac: [
+            "hmac-sha2-256",
+            "hmac-sha2-512",
+            "hmac-sha1",
+            "hmac-md5",
+          ],
         },
-        // Some older Cisco devices need this
+        // Keyboard-interactive fallback for Cisco password prompts
         tryKeyboard: true,
       })
     })
