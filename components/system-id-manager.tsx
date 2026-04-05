@@ -1,11 +1,12 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useRef, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { X, Plus, Trash2, Download, Upload, Tag } from "lucide-react"
+import { X, Trash2, Download, Upload, Tag, FileUp, CheckCircle2, AlertCircle } from "lucide-react"
 import type { GraphNode } from "@/lib/ospf-types"
+import { parseSystemIdFile, mergeSystemIds } from "@/lib/system-id-file-parser"
 
 interface SystemIdManagerProps {
   nodes: GraphNode[]
@@ -19,6 +20,50 @@ export function SystemIdManager({ nodes, systemIds, onSystemIdsChange, onClose }
   const [bulkMode, setBulkMode] = useState(false)
   const [search, setSearch] = useState("")
   const [localIds, setLocalIds] = useState<Record<string, string>>({ ...systemIds })
+
+  // ── File upload state ──
+  const [isDragging, setIsDragging] = useState(false)
+  const [uploadStatus, setUploadStatus] = useState<
+    | { type: "idle" }
+    | { type: "parsing" }
+    | { type: "success"; count: number; filename: string }
+    | { type: "error"; message: string }
+  >({ type: "idle" })
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const processFile = useCallback(async (file: File) => {
+    setUploadStatus({ type: "parsing" })
+    try {
+      const parsed = await parseSystemIdFile(file)
+      const count = Object.keys(parsed).length
+      if (count === 0) {
+        setUploadStatus({ type: "error", message: "No IP→Name pairs found. Check the file format." })
+        return
+      }
+      const merged = mergeSystemIds(localIds, parsed)
+      setLocalIds(merged)
+      setUploadStatus({ type: "success", count, filename: file.name })
+      setTimeout(() => setUploadStatus({ type: "idle" }), 4000)
+    } catch (err) {
+      setUploadStatus({
+        type: "error",
+        message: err instanceof Error ? err.message : "Failed to parse file.",
+      })
+    }
+  }, [localIds])
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) processFile(file)
+    e.target.value = ""
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragging(false)
+    const file = e.dataTransfer.files?.[0]
+    if (file) processFile(file)
+  }
 
   const routerNodes = useMemo(
     () => nodes.filter((n) => n.type === "router"),
@@ -114,6 +159,56 @@ export function SystemIdManager({ nodes, systemIds, onSystemIdsChange, onClose }
               <X className="w-4 h-4" />
             </button>
           </div>
+        </div>
+
+        {/* File Upload Zone */}
+        <div className="px-5 py-3 border-b border-border bg-secondary/20 shrink-0">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv,.tsv,.txt,.json"
+            className="hidden"
+            onChange={handleFileChange}
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            onDrop={handleDrop}
+            onDragOver={(e) => { e.preventDefault(); setIsDragging(true) }}
+            onDragLeave={() => setIsDragging(false)}
+            className={`w-full flex items-center justify-center gap-2.5 rounded-lg border-2 border-dashed py-2.5 px-3 transition-colors cursor-pointer
+              ${isDragging
+                ? "border-primary bg-primary/10 text-primary"
+                : "border-border hover:border-primary/50 hover:bg-secondary/60 text-muted-foreground hover:text-foreground"
+              }`}
+          >
+            {uploadStatus.type === "parsing" ? (
+              <>
+                <div className="w-3.5 h-3.5 border-2 border-primary border-t-transparent rounded-full animate-spin shrink-0" />
+                <span className="text-xs">Parsing file...</span>
+              </>
+            ) : uploadStatus.type === "success" ? (
+              <>
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                <span className="text-xs text-emerald-500 font-medium">
+                  {uploadStatus.count} entries loaded from {uploadStatus.filename}
+                </span>
+              </>
+            ) : uploadStatus.type === "error" ? (
+              <>
+                <AlertCircle className="w-3.5 h-3.5 text-destructive shrink-0" />
+                <span className="text-xs text-destructive">{uploadStatus.message}</span>
+              </>
+            ) : (
+              <>
+                <FileUp className="w-3.5 h-3.5 shrink-0" />
+                <span className="text-xs">
+                  <span className="font-medium">Upload file</span>
+                  <span className="text-muted-foreground"> — CSV, TSV, TXT or JSON &middot; drag & drop or click</span>
+                </span>
+              </>
+            )}
+          </button>
         </div>
 
         {/* Bulk input area */}
