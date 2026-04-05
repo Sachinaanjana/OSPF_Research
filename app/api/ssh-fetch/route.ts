@@ -1,11 +1,14 @@
 import { NextResponse } from "next/server"
 import { Client } from "ssh2"
 
-const DEFAULT_COMMANDS = [
-  "show ip ospf database",
-  "show ip ospf database router",
-  "show ip ospf database network",
-  "show ip ospf database summary",
+// The 6 OSPF commands we need, mapped to MultiCommandInput keys
+const OSPF_COMMANDS: Array<{ key: string; cmd: string }> = [
+  { key: "showIpOspf",                  cmd: "show ip ospf" },
+  { key: "showIpOspfNeighbor",          cmd: "show ip ospf neighbor" },
+  { key: "showIpOspfDatabaseRouter",    cmd: "show ip ospf database router" },
+  { key: "showIpOspfDatabaseNetwork",   cmd: "show ip ospf database network" },
+  { key: "showIpOspfInterface",         cmd: "show ip ospf interface" },
+  { key: "showIpRouteOspf",             cmd: "show ip route ospf" },
 ]
 
 const SSH_TIMEOUT = 30000 // 30 seconds
@@ -98,51 +101,66 @@ export async function POST(request: Request) {
       conn.on("ready", async () => {
         clearTimeout(timer)
         try {
-          // Determine commands to run
-          const cmds = command
-            ? [command.trim()]
-            : DEFAULT_COMMANDS
-
-          let allOutput = ""
-
           // Try enable mode first if enablePassword is provided
           if (enablePassword) {
             try {
-              const enableOut = await sshExec(conn, "enable")
-              if (enableOut.includes("Password:") || enableOut.includes("password:")) {
-                await sshExec(conn, enablePassword)
-              }
+              await sshExec(conn, "enable")
             } catch {
               // Enable might not be needed, continue
             }
+            try {
+              await sshExec(conn, enablePassword)
+            } catch {
+              // May not need password entry
+            }
           }
 
-          // Set terminal length to avoid paging
+          // Set terminal length to avoid paging (Cisco IOS)
           try {
             await sshExec(conn, "terminal length 0")
           } catch {
             // Not all devices support this
           }
+          // Also try terminal pager 0 (some variants)
+          try {
+            await sshExec(conn, "terminal pager 0")
+          } catch { /* ignore */ }
 
-          for (const cmd of cmds) {
+          // If a custom single command was requested, run only that
+          if (command && command.trim()) {
+            const output = await sshExec(conn, command.trim())
+            conn.end()
+            if (!output.trim()) {
+              reject(new Error("No output received from router."))
+            } else {
+              resolve(JSON.stringify({ raw: output.trim() }))
+            }
+            return
+          }
+
+          // Run all 6 OSPF commands and map output to MultiCommandInput keys
+          const commandResults: Record<string, string> = {}
+          let anyOutput = false
+
+          for (const { key, cmd } of OSPF_COMMANDS) {
             try {
               const output = await sshExec(conn, cmd)
               if (output.trim()) {
-                allOutput += `\n! Command: ${cmd}\n`
-                allOutput += output
-                allOutput += "\n"
+                commandResults[key] = output.trim()
+                anyOutput = true
               }
             } catch (cmdErr) {
-              allOutput += `\n! Command failed: ${cmd} - ${cmdErr instanceof Error ? cmdErr.message : "Unknown error"}\n`
+              // Store error note so the UI knows this command ran but failed
+              commandResults[key] = `! Command failed: ${cmd} — ${cmdErr instanceof Error ? cmdErr.message : "Unknown error"}`
             }
           }
 
           conn.end()
 
-          if (!allOutput.trim()) {
+          if (!anyOutput) {
             reject(new Error("No output received from router. Check if OSPF is configured."))
           } else {
-            resolve(allOutput.trim())
+            resolve(JSON.stringify(commandResults))
           }
         } catch (execErr) {
           conn.end()
@@ -189,7 +207,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       success: true,
-      data: connectResult,
+      data: connectResult,          // JSON string of MultiCommandInput keys
       host: hostClean,
       timestamp: Date.now(),
     })

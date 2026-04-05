@@ -17,6 +17,8 @@ import { parseOSPFData, type MultiCommandInput } from "@/lib/ospf-parser"
 import { buildGraph, computeAutoFit } from "@/lib/layout-engine"
 import { usePolling } from "@/lib/polling-client"
 import { diffTopologies, applyNodeStatuses, applyEdgeStatuses } from "@/lib/topology-diff"
+import { computePathsFrom, type PathsFromSource } from "@/lib/path-finder"
+import { PathPopup } from "@/components/path-popup"
 import type {
   OSPFTopology,
   GraphNode,
@@ -80,6 +82,12 @@ export default function Page() {
   const [showSystemIdManager, setShowSystemIdManager] = useState(false)
   const [events, setEvents] = useState<TopologyChange[]>([])
   const canvasSizeRef = useRef({ width: 900, height: 600 })
+
+  // ── Path highlighting state ──
+  const [pathSource, setPathSource] = useState<PathsFromSource | null>(null)
+  const [pathSourceNodeId, setPathSourceNodeId] = useState<string | null>(null)
+  const [pathTargetNodeId, setPathTargetNodeId] = useState<string | null>(null)
+  const [showPathPopup, setShowPathPopup] = useState(false)
 
   const handleCanvasSizeChange = useCallback((w: number, h: number) => {
     canvasSizeRef.current = { width: w, height: h }
@@ -206,8 +214,20 @@ export default function Page() {
   // ── SSH data received ──
   const handleSSHData = useCallback(
     (data: string, host: string) => {
-      // SSH data is treated as combined database output (raw)
-      const input: MultiCommandInput = { raw: data }
+      // data is a JSON string of MultiCommandInput keys (from updated ssh-fetch route)
+      // or a raw string (fallback for custom single command)
+      let input: MultiCommandInput
+      try {
+        const parsed = JSON.parse(data)
+        // Validate it looks like a MultiCommandInput object
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          input = parsed as MultiCommandInput
+        } else {
+          input = { raw: data }
+        }
+      } catch {
+        input = { raw: data }
+      }
       setMultiInput(input)
       setParseError(null)
       const { width, height } = canvasSizeRef.current
@@ -252,7 +272,7 @@ export default function Page() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             topology: parsed,
-            raw_text: data,
+            raw_text: input.raw || input.showIpOspfDatabaseRouter || data,
             source: "ssh",
             host,
             name: `${host} — ${parsed.routers.length} routers`,
@@ -276,6 +296,10 @@ export default function Page() {
     setSelectedEdgeId(null)
     setEvents([])
     setViewFilter("all")
+    setPathSource(null)
+    setPathSourceNodeId(null)
+    setPathTargetNodeId(null)
+    setShowPathPopup(false)
   }, [])
 
   // ── Save snapshot to DB ──
@@ -512,6 +536,70 @@ export default function Page() {
 
   const hasTopology = nodes.length > 0
 
+  // ── Path highlight derived sets ──
+  const highlightedNodeIds = useMemo<Set<string> | undefined>(() => {
+    if (!pathSource || !showPathPopup) return undefined
+    const ids = new Set<string>()
+    ids.add(pathSource.sourceId)
+    if (pathTargetNodeId) {
+      const p = pathSource.paths.get(pathTargetNodeId)
+      if (p) p.nodeIds.forEach((id) => ids.add(id))
+    } else {
+      for (const p of pathSource.paths.values()) p.nodeIds.forEach((id) => ids.add(id))
+    }
+    return ids
+  }, [pathSource, pathTargetNodeId, showPathPopup])
+
+  const highlightedEdgeIds = useMemo<Set<string> | undefined>(() => {
+    if (!pathSource || !showPathPopup) return undefined
+    const ids = new Set<string>()
+    if (pathTargetNodeId) {
+      const p = pathSource.paths.get(pathTargetNodeId)
+      if (p) p.edgeIds.forEach((id) => ids.add(id))
+    } else {
+      for (const p of pathSource.paths.values()) p.edgeIds.forEach((id) => ids.add(id))
+    }
+    return ids
+  }, [pathSource, pathTargetNodeId, showPathPopup])
+
+  // ── Node select handler — compute paths on first click, show target path on second ──
+  const handleNodeSelect = useCallback(
+    (id: string | null) => {
+      setSelectedNodeId(id)
+      if (!id) {
+        setPathSource(null)
+        setPathSourceNodeId(null)
+        setPathTargetNodeId(null)
+        setShowPathPopup(false)
+        return
+      }
+      const clickedNode = filteredNodes.find((n) => n.id === id)
+      if (!clickedNode || clickedNode.type !== "router") {
+        // Clicking a network node just selects it without path mode
+        setPathSource(null)
+        setPathSourceNodeId(null)
+        setPathTargetNodeId(null)
+        setShowPathPopup(false)
+        return
+      }
+
+      if (pathSourceNodeId && id !== pathSourceNodeId) {
+        // Second click on a different router — show specific path
+        setPathTargetNodeId(id)
+        setShowPathPopup(true)
+        return
+      }
+
+      // First click — compute all paths from this router
+      const computed = computePathsFrom(id, filteredNodes, filteredEdges)
+      setPathSource(computed)
+      setPathSourceNodeId(id)
+      setPathTargetNodeId(null)
+      setShowPathPopup(true)
+    },
+    [filteredNodes, filteredEdges, pathSourceNodeId]
+  )
+
   // ── Render ──
   return (
     <>
@@ -654,7 +742,9 @@ export default function Page() {
               panX={panX}
               panY={panY}
               systemIds={systemIds}
-              onSelectNode={setSelectedNodeId}
+              highlightedNodeIds={highlightedNodeIds}
+              highlightedEdgeIds={highlightedEdgeIds}
+              onSelectNode={handleNodeSelect}
               onSelectEdge={setSelectedEdgeId}
               onZoomChange={setZoom}
               onPanChange={(x, y) => { setPanX(x); setPanY(y) }}
@@ -663,6 +753,37 @@ export default function Page() {
           ) : (
             <EmptyState />
           )}
+
+          {/* Path mode hint */}
+          {pathSourceNodeId && showPathPopup && !pathTargetNodeId && (
+            <div className="absolute bottom-14 left-1/2 -translate-x-1/2 z-20 bg-card/95 backdrop-blur-sm border border-primary/30 rounded-lg px-3 py-2 text-xs text-muted-foreground shadow-lg">
+              Click another router to see the specific path to it
+            </div>
+          )}
+
+          {/* Path popup overlay */}
+          {showPathPopup && pathSource && pathSourceNodeId && (() => {
+            const srcNode = filteredNodes.find((n) => n.id === pathSourceNodeId)
+            const tgtNode = pathTargetNodeId ? filteredNodes.find((n) => n.id === pathTargetNodeId) ?? null : null
+            if (!srcNode) return null
+            return (
+              <PathPopup
+                sourceNode={srcNode}
+                targetNode={tgtNode}
+                allPaths={pathSource.paths}
+                nodes={filteredNodes}
+                edges={filteredEdges}
+                systemIds={systemIds}
+                onClose={() => {
+                  setShowPathPopup(false)
+                  setPathSource(null)
+                  setPathSourceNodeId(null)
+                  setPathTargetNodeId(null)
+                  setSelectedNodeId(null)
+                }}
+              />
+            )
+          })()}
         </div>
 
         {/* Right panel toggle */}
@@ -716,9 +837,8 @@ export default function Page() {
                 <RouterTable
                   nodes={filteredNodes}
                   onSelectNode={(id) => {
-                    setSelectedNodeId(id)
+                    handleNodeSelect(id)
                     setRightTab("details")
-                    // Also focus/zoom to the node
                     handleFocusNode(id)
                   }}
                 />
@@ -731,7 +851,14 @@ export default function Page() {
                         selectedEdge={selectedEdge}
                         nodes={filteredNodes}
                         systemIds={systemIds}
-                        onClose={() => { setSelectedNodeId(null); setSelectedEdgeId(null) }}
+                        onClose={() => {
+                        setSelectedNodeId(null)
+                        setSelectedEdgeId(null)
+                        setPathSource(null)
+                        setPathSourceNodeId(null)
+                        setPathTargetNodeId(null)
+                        setShowPathPopup(false)
+                      }}
                       />
                     </div>
                   )}

@@ -3,8 +3,9 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from "react"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { X, Trash2, Download, Upload } from "lucide-react"
+import { X, Trash2, Download, Upload, FileUp, CheckCircle2, AlertCircle } from "lucide-react"
 import type { GraphNode } from "@/lib/ospf-types"
+import { parseSystemIdFile, mergeSystemIds } from "@/lib/system-id-file-parser"
 
 const LS_KEY = "ospf_system_ids"
 
@@ -35,6 +36,16 @@ export function SystemIdInlinePanel({ nodes, systemIds, onSystemIdsChange }: Sys
   const [localIds, setLocalIds] = useState<Record<string, string>>({})
   const [loaded, setLoaded] = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // ── File upload state ──
+  const [isDragging, setIsDragging] = useState(false)
+  const [uploadStatus, setUploadStatus] = useState<
+    | { type: "idle" }
+    | { type: "parsing" }
+    | { type: "success"; count: number; filename: string }
+    | { type: "error"; message: string }
+  >({ type: "idle" })
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Load from localStorage on mount
   useEffect(() => {
@@ -116,10 +127,114 @@ export function SystemIdInlinePanel({ nodes, systemIds, onSystemIdsChange }: Sys
     saveToStorage({})
   }
 
+  // ── File upload handlers ──
+  const processFile = useCallback(async (file: File) => {
+    setUploadStatus({ type: "parsing" })
+    try {
+      const parsed = await parseSystemIdFile(file)
+      const count = Object.keys(parsed).length
+      if (count === 0) {
+        setUploadStatus({ type: "error", message: "No IP→Name pairs found. Check the file format." })
+        return
+      }
+      const merged = mergeSystemIds(localIds, parsed)
+      setLocalIds(merged)
+      onSystemIdsChange(merged)
+      saveToStorage(merged)
+      setUploadStatus({ type: "success", count, filename: file.name })
+      // Auto-clear success message after 4 seconds
+      setTimeout(() => setUploadStatus({ type: "idle" }), 4000)
+    } catch (err) {
+      setUploadStatus({
+        type: "error",
+        message: err instanceof Error ? err.message : "Failed to parse file.",
+      })
+    }
+  }, [localIds, onSystemIdsChange])
+
+  const handleFileChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0]
+      if (file) processFile(file)
+      // Reset so same file can be re-uploaded
+      e.target.value = ""
+    },
+    [processFile]
+  )
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault()
+      setIsDragging(false)
+      const file = e.dataTransfer.files?.[0]
+      if (file) processFile(file)
+    },
+    [processFile]
+  )
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragging(true)
+  }
+
+  const handleDragLeave = () => setIsDragging(false)
+
   const namedCount = Object.values(localIds).filter(Boolean).length
 
   return (
     <div className="flex flex-col h-full">
+      {/* ── File Upload Zone ── */}
+      <div className="px-3 pt-3 pb-2 shrink-0">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".csv,.tsv,.txt,.json"
+          className="hidden"
+          onChange={handleFileChange}
+        />
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          onDrop={handleDrop}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          className={`w-full flex flex-col items-center justify-center gap-1.5 rounded-lg border-2 border-dashed py-3 px-2 transition-colors cursor-pointer
+            ${isDragging
+              ? "border-primary bg-primary/10 text-primary"
+              : "border-border bg-secondary/30 hover:border-primary/50 hover:bg-secondary/60 text-muted-foreground hover:text-foreground"
+            }`}
+        >
+          {uploadStatus.type === "parsing" ? (
+            <>
+              <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+              <span className="text-[10px]">Parsing file...</span>
+            </>
+          ) : uploadStatus.type === "success" ? (
+            <>
+              <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+              <span className="text-[10px] text-emerald-500 font-medium text-center">
+                {uploadStatus.count} entries loaded from {uploadStatus.filename}
+              </span>
+            </>
+          ) : uploadStatus.type === "error" ? (
+            <>
+              <AlertCircle className="w-4 h-4 text-destructive" />
+              <span className="text-[10px] text-destructive text-center">{uploadStatus.message}</span>
+              <span className="text-[9px] text-muted-foreground">Click to try again</span>
+            </>
+          ) : (
+            <>
+              <FileUp className="w-4 h-4" />
+              <span className="text-[10px] font-medium">Upload System ID file</span>
+              <span className="text-[9px] text-center leading-relaxed">
+                CSV, TSV, TXT or JSON &middot; drag & drop or click<br />
+                Auto-maps IPs to System IDs
+              </span>
+            </>
+          )}
+        </button>
+      </div>
+
       {/* Header */}
       <div className="px-4 py-3 border-b border-border shrink-0">
         <div className="flex items-center justify-between mb-2">

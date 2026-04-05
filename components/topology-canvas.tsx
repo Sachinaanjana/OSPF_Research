@@ -17,6 +17,10 @@ interface TopologyCanvasProps {
   panX: number
   panY: number
   systemIds?: Record<string, string>
+  /** IDs of nodes on the highlighted path */
+  highlightedNodeIds?: Set<string>
+  /** IDs of edges on the highlighted path */
+  highlightedEdgeIds?: Set<string>
   onSelectNode: (id: string | null) => void
   onSelectEdge: (id: string | null) => void
   onZoomChange: (zoom: number) => void
@@ -203,6 +207,8 @@ export function TopologyCanvas({
   panX,
   panY,
   systemIds = {},
+  highlightedNodeIds,
+  highlightedEdgeIds,
   onSelectNode,
   onSelectEdge,
   onZoomChange,
@@ -371,13 +377,29 @@ export function TopologyCanvas({
       if (!isInViewport(sourceNode.x, sourceNode.y) && !isInViewport(targetNode.x, targetNode.y)) continue
 
       const isSelected = edge.id === selectedEdgeId
+      const isOnPath = highlightedEdgeIds?.has(edge.id) ?? false
+      // Dim non-path edges when a path is active
+      const isDimmed = highlightedEdgeIds && highlightedEdgeIds.size > 0 && !isOnPath && !isSelected
       const edgeColor = getAreaColor(edge.area)
-      const edgeAlpha = getStatusAlpha(edge.status, edge.statusTimestamp)
+      const edgeAlpha = isDimmed ? 0.12 : getStatusAlpha(edge.status, edge.statusTimestamp)
       const edgeGlow = getGlowIntensity(edge.status, edge.statusTimestamp)
       const statusCol = getStatusColor(edge.status)
 
       ctx.save()
       ctx.globalAlpha = edgeAlpha
+
+      // Path highlight glow (drawn behind the main line)
+      if (isOnPath) {
+        ctx.beginPath()
+        ctx.moveTo(sourceNode.x, sourceNode.y)
+        ctx.lineTo(targetNode.x, targetNode.y)
+        ctx.strokeStyle = "#22d3ee"
+        ctx.lineWidth = 10
+        ctx.globalAlpha = 0.25
+        ctx.setLineDash([])
+        ctx.stroke()
+        ctx.globalAlpha = edgeAlpha
+      }
 
       // Status glow (only for active status changes, skip shadow for perf)
       if (edgeGlow > 0 && statusCol) {
@@ -406,8 +428,11 @@ export function TopologyCanvas({
         ctx.lineWidth = isSelected ? 2.5 : 1.2
       }
 
-      ctx.strokeStyle = isSelected ? (statusCol || edgeColor) : (statusCol ? statusCol + "cc" : edgeColor + "60")
-      if (isSelected) { ctx.shadowColor = statusCol || edgeColor; ctx.shadowBlur = 10 }
+      ctx.strokeStyle = isOnPath
+        ? "#22d3ee"
+        : isSelected ? (statusCol || edgeColor) : (statusCol ? statusCol + "cc" : edgeColor + "60")
+      ctx.lineWidth = isOnPath ? (isSelected ? 4 : 3) : isSelected ? 3 : 1.5
+      if (isSelected || isOnPath) { ctx.shadowColor = isOnPath ? "#22d3ee" : (statusCol || edgeColor); ctx.shadowBlur = isOnPath ? 12 : 10 }
       ctx.stroke()
       ctx.setLineDash([])
       ctx.shadowBlur = 0
@@ -530,8 +555,10 @@ export function TopologyCanvas({
       if (!isInViewport(node.x, node.y)) continue
 
       const isSelected = node.id === selectedNodeId
+      const isOnPath = highlightedNodeIds?.has(node.id) ?? false
+      const isDimmedNode = highlightedNodeIds && highlightedNodeIds.size > 0 && !isOnPath && !isSelected
       const color = getNodeColor(node)
-      const nodeAlpha = getStatusAlpha(node.status, node.statusTimestamp)
+      const nodeAlpha = isDimmedNode ? 0.15 : getStatusAlpha(node.status, node.statusTimestamp)
       const nodeGlow = getGlowIntensity(node.status, node.statusTimestamp)
       const nodeStatusCol = getStatusColor(node.status)
 
@@ -553,6 +580,22 @@ export function TopologyCanvas({
       }
 
       const drawColor = nodeStatusCol && nodeGlow > 0.2 ? nodeStatusCol : color
+
+      // Path node ring highlight
+      if (isOnPath) {
+        ctx.save()
+        ctx.globalAlpha = 0.85
+        ctx.strokeStyle = "#22d3ee"
+        ctx.lineWidth = 2.5
+        ctx.shadowColor = "#22d3ee"
+        ctx.shadowBlur = 14
+        ctx.beginPath()
+        ctx.arc(node.x, node.y, 28, 0, Math.PI * 2)
+        ctx.stroke()
+        ctx.shadowBlur = 0
+        ctx.restore()
+        ctx.globalAlpha = nodeAlpha
+      }
 
       // LOD-based rendering
       if (detailLevel === "minimal") {
@@ -745,7 +788,7 @@ export function TopologyCanvas({
     }
 
     ctx.restore()
-  }, [localNodes, edges, selectedNodeId, selectedEdgeId, focusedNodeId, showLabels, showMetrics, colorBy, zoom, panX, panY, canvasSize, getNodeColor, nodeMap, detailLevel, viewport, isInViewport, systemIds])
+  }, [localNodes, edges, selectedNodeId, selectedEdgeId, focusedNodeId, showLabels, showMetrics, colorBy, zoom, panX, panY, canvasSize, getNodeColor, nodeMap, detailLevel, viewport, isInViewport, systemIds, highlightedNodeIds, highlightedEdgeIds])
 
   useEffect(() => { draw() }, [draw])
 
