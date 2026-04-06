@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { spawn } from "child_process"
+import { Socket } from "net"
 
 // The 6 OSPF commands we need, mapped to MultiCommandInput keys
 const OSPF_COMMANDS: Array<{ key: string; cmd: string }> = [
@@ -11,136 +11,169 @@ const OSPF_COMMANDS: Array<{ key: string; cmd: string }> = [
   { key: "showIpRouteOspf", cmd: "show ip route ospf" },
 ]
 
-const SSH_TIMEOUT = 45000 // 45 seconds total
+const TELNET_TIMEOUT = 60000 // 60 seconds total
+const COMMAND_DELAY = 300 // ms between commands
+const PROMPT_WAIT = 1500 // ms to wait for prompt after command
 
 /**
- * Execute SSH commands using the system's native ssh client.
- * This bypasses the ssh2 library's native binding requirement for legacy algorithms.
- * The host OS's ssh client already supports diffie-hellman-group-exchange-sha1 and ssh-rsa.
+ * Execute Telnet commands to a Cisco IOS device.
+ * Telnet uses raw TCP on port 23 — no encryption algorithm negotiation required.
  */
-function execSSH(
+function execTelnet(
   host: string,
   port: number,
   username: string,
   password: string,
+  enablePassword: string | undefined,
   commands: string[]
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    // Build the command script to send to the router
-    // We use terminal length 0 to disable paging, then run all commands
-    const script = [
-      "terminal length 0",
-      ...commands,
-      "exit",
-    ].join("\n")
-
-    // SSH options to enable legacy algorithms that Cisco IOS requires
-    const sshArgs = [
-      "-o", "StrictHostKeyChecking=no",
-      "-o", "UserKnownHostsFile=/dev/null",
-      "-o", "KexAlgorithms=+diffie-hellman-group-exchange-sha1,diffie-hellman-group14-sha1,diffie-hellman-group1-sha1",
-      "-o", "HostKeyAlgorithms=+ssh-rsa",
-      "-o", "PubkeyAcceptedAlgorithms=+ssh-rsa",
-      "-o", "Ciphers=+aes128-ctr,aes192-ctr,aes256-ctr,aes128-cbc,aes256-cbc,3des-cbc",
-      "-o", "MACs=+hmac-sha2-256,hmac-sha2-512,hmac-sha1,hmac-md5",
-      "-o", "ConnectTimeout=15",
-      "-o", "ServerAliveInterval=5",
-      "-o", "ServerAliveCountMax=3",
-      "-o", "BatchMode=no",
-      "-o", "PreferredAuthentications=keyboard-interactive,password",
-      "-p", String(port),
-      "-l", username,
-      host,
-    ]
-
+    const socket = new Socket()
     let output = ""
-    let errorOutput = ""
-    let passwordSent = false
     let finished = false
+    let commandIndex = -1 // -1 = login phase, 0+ = command execution
+    let inEnableMode = false
+    let enableAttempted = false
+
+    // Queue of commands to send: terminal length 0, then user commands, then exit
+    const cmdQueue = ["terminal length 0", ...commands, "exit"]
 
     const timer = setTimeout(() => {
       if (!finished) {
         finished = true
-        sshProcess.kill("SIGTERM")
-        reject(new Error(`SSH connection timed out after ${SSH_TIMEOUT / 1000}s`))
+        socket.destroy()
+        reject(new Error(`Telnet connection timed out after ${TELNET_TIMEOUT / 1000}s`))
       }
-    }, SSH_TIMEOUT)
+    }, TELNET_TIMEOUT)
 
-    const sshProcess = spawn("ssh", sshArgs, {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, SSH_ASKPASS_REQUIRE: "never" },
+    const cleanup = () => {
+      clearTimeout(timer)
+      if (!socket.destroyed) socket.destroy()
+    }
+
+    const sendCommand = (cmd: string) => {
+      socket.write(cmd + "\r\n")
+    }
+
+    const processNextCommand = () => {
+      commandIndex++
+      if (commandIndex < cmdQueue.length) {
+        setTimeout(() => {
+          if (!finished) {
+            sendCommand(cmdQueue[commandIndex])
+          }
+        }, COMMAND_DELAY)
+      } else {
+        // All commands sent, wait for final output then close
+        setTimeout(() => {
+          if (!finished) {
+            finished = true
+            cleanup()
+            resolve(output)
+          }
+        }, PROMPT_WAIT)
+      }
+    }
+
+    socket.on("connect", () => {
+      // Connected, wait for login prompt
     })
 
-    sshProcess.stdout.on("data", (data: Buffer) => {
+    socket.on("data", (data: Buffer) => {
       const chunk = data.toString()
       output += chunk
 
-      // Detect password prompt and send password
-      if (!passwordSent && /[Pp]assword[:\s]*$/i.test(output)) {
-        passwordSent = true
-        sshProcess.stdin.write(password + "\n")
-        
-        // After password, wait a moment then send commands
-        setTimeout(() => {
-          if (!finished) {
-            sshProcess.stdin.write(script + "\n")
-          }
-        }, 500)
-      }
-    })
+      // Strip Telnet IAC sequences for prompt detection
+      const cleanChunk = chunk.replace(/\xff[\xfb\xfc\xfd\xfe].|\xff\xfa[\s\S]*?\xff\xf0/g, "")
+      const cleanOutput = output.replace(/\xff[\xfb\xfc\xfd\xfe].|\xff\xfa[\s\S]*?\xff\xf0/g, "")
 
-    sshProcess.stderr.on("data", (data: Buffer) => {
-      const chunk = data.toString()
-      errorOutput += chunk
-
-      // Also check stderr for password prompt (some ssh versions use stderr)
-      if (!passwordSent && /[Pp]assword[:\s]*$/i.test(errorOutput)) {
-        passwordSent = true
-        sshProcess.stdin.write(password + "\n")
-        
-        setTimeout(() => {
-          if (!finished) {
-            sshProcess.stdin.write(script + "\n")
-          }
-        }, 500)
-      }
-    })
-
-    sshProcess.on("close", (code) => {
-      if (finished) return
-      finished = true
-      clearTimeout(timer)
-
-      if (code !== 0 && !output.trim()) {
-        // Check for common error messages
-        if (errorOutput.includes("Permission denied")) {
-          reject(new Error("Authentication failed: Invalid username or password"))
-        } else if (errorOutput.includes("Connection refused")) {
-          reject(new Error("Connection refused: SSH port may be blocked or not running"))
-        } else if (errorOutput.includes("Connection timed out") || errorOutput.includes("No route to host")) {
-          reject(new Error("Connection timed out: Router is unreachable"))
-        } else if (errorOutput.includes("Host key verification failed")) {
-          reject(new Error("Host key verification failed"))
-        } else {
-          reject(new Error(errorOutput.trim() || `SSH exited with code ${code}`))
+      // Login phase
+      if (commandIndex === -1) {
+        // Username prompt
+        if (/[Uu]sername[:\s]*$/.test(cleanOutput) || /[Ll]ogin[:\s]*$/.test(cleanOutput)) {
+          sendCommand(username)
+          return
         }
-      } else {
-        resolve(output)
+        // Password prompt (during login)
+        if (/[Pp]assword[:\s]*$/.test(cleanOutput) && !inEnableMode) {
+          sendCommand(password)
+          return
+        }
+        // Privileged EXEC prompt (Router#) — ready to send commands
+        if (/[\w\-\.]+#\s*$/.test(cleanOutput)) {
+          inEnableMode = true
+          processNextCommand()
+          return
+        }
+        // User EXEC prompt (Router>) — need to enter enable mode
+        if (/[\w\-\.]+>\s*$/.test(cleanOutput)) {
+          if (!enableAttempted) {
+            enableAttempted = true
+            sendCommand("enable")
+            return
+          }
+        }
+        // Enable password prompt
+        if (/[Pp]assword[:\s]*$/.test(cleanOutput) && enableAttempted && !inEnableMode) {
+          sendCommand(enablePassword || password)
+          return
+        }
+        // Authentication failed
+        if (/[Aa]uthentication\s+[Ff]ailed|[Bb]ad\s+[Pp]assword|[Ll]ogin\s+[Ii]nvalid|[Aa]ccess\s+[Dd]enied/i.test(cleanOutput)) {
+          finished = true
+          cleanup()
+          reject(new Error("Authentication failed: Invalid username or password"))
+          return
+        }
+      }
+
+      // Command execution phase — detect prompt to send next command
+      if (commandIndex >= 0 && commandIndex < cmdQueue.length) {
+        // Check if we see a privileged prompt after the current command
+        if (/[\w\-\.]+#\s*$/.test(cleanChunk)) {
+          processNextCommand()
+        }
       }
     })
 
-    sshProcess.on("error", (err) => {
+    socket.on("error", (err) => {
       if (finished) return
       finished = true
-      clearTimeout(timer)
-      reject(new Error(`Failed to spawn ssh: ${err.message}`))
+      cleanup()
+      
+      if (err.message.includes("ECONNREFUSED")) {
+        reject(new Error("Connection refused: Telnet port may be blocked or not enabled on the router"))
+      } else if (err.message.includes("ETIMEDOUT") || err.message.includes("EHOSTUNREACH")) {
+        reject(new Error("Connection timed out: Router is unreachable"))
+      } else {
+        reject(new Error(`Telnet error: ${err.message}`))
+      }
     })
+
+    socket.on("close", () => {
+      if (finished) return
+      finished = true
+      cleanup()
+      resolve(output)
+    })
+
+    socket.on("timeout", () => {
+      if (finished) return
+      finished = true
+      cleanup()
+      reject(new Error("Telnet socket timeout"))
+    })
+
+    // Set socket timeout
+    socket.setTimeout(TELNET_TIMEOUT)
+
+    // Connect
+    socket.connect(port, host)
   })
 }
 
 /**
- * Parse raw SSH output into per-command results.
- * The output contains all commands run sequentially with their prompts.
+ * Parse raw Telnet output into per-command results.
  */
 function parseCommandOutput(
   raw: string,
@@ -148,44 +181,56 @@ function parseCommandOutput(
 ): Record<string, string> {
   const results: Record<string, string> = {}
 
+  // Clean up Telnet control sequences
+  const cleaned = raw
+    .replace(/\xff[\xfb\xfc\xfd\xfe].|\xff\xfa[\s\S]*?\xff\xf0/g, "") // IAC sequences
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+
   for (let i = 0; i < commands.length; i++) {
     const { key, cmd } = commands[i]
     const nextCmd = commands[i + 1]?.cmd
 
     // Find this command in the output
-    const cmdIndex = raw.indexOf(cmd)
+    const cmdIndex = cleaned.indexOf(cmd)
     if (cmdIndex === -1) {
       results[key] = ""
       continue
     }
 
     // Find where the output for this command starts (after the command line)
-    const startIndex = cmdIndex + cmd.length
-    
+    const lineEnd = cleaned.indexOf("\n", cmdIndex)
+    const startIndex = lineEnd !== -1 ? lineEnd + 1 : cmdIndex + cmd.length
+
     // Find where the next command or prompt starts
-    let endIndex = raw.length
+    let endIndex = cleaned.length
     if (nextCmd) {
-      const nextIndex = raw.indexOf(nextCmd, startIndex)
+      const nextIndex = cleaned.indexOf(nextCmd, startIndex)
       if (nextIndex !== -1) {
-        endIndex = nextIndex
+        // Go back to the prompt line before the next command
+        const promptLineStart = cleaned.lastIndexOf("\n", nextIndex - 1)
+        if (promptLineStart !== -1 && promptLineStart > startIndex) {
+          endIndex = promptLineStart
+        } else {
+          endIndex = nextIndex
+        }
       }
     }
-    
-    // Also look for the router prompt (e.g., "Router#" or "hostname#")
-    const promptMatch = raw.slice(startIndex, endIndex).match(/\r?\n[\w\-\.]+[>#]\s*$/m)
+
+    // Also look for the router prompt at the end
+    const outputSlice = cleaned.slice(startIndex, endIndex)
+    const promptMatch = outputSlice.match(/\n[\w\-\.]+#\s*$/m)
     if (promptMatch && promptMatch.index !== undefined) {
       endIndex = startIndex + promptMatch.index
     }
 
     // Extract and clean the output
-    let output = raw.slice(startIndex, endIndex)
-    // Remove leading/trailing whitespace and common prompt patterns
-    output = output
-      .replace(/^\s*\r?\n/, "")  // Remove leading newline
-      .replace(/\r?\n[\w\-\.]+[>#]\s*$/, "")  // Remove trailing prompt
-      .trim()
+    let cmdOutput = cleaned.slice(startIndex, endIndex).trim()
+    
+    // Remove any trailing prompts
+    cmdOutput = cmdOutput.replace(/\n[\w\-\.]+#\s*$/, "").trim()
 
-    results[key] = output
+    results[key] = cmdOutput
   }
 
   return results
@@ -196,15 +241,17 @@ export async function POST(request: Request) {
     const body = await request.json()
     const {
       host,
-      port = 22,
+      port = 23, // Default Telnet port
       username,
       password,
+      enablePassword,
       command,
     } = body as {
       host: string
       port?: number
       username: string
       password: string
+      enablePassword?: string
       command?: string
     }
 
@@ -216,25 +263,26 @@ export async function POST(request: Request) {
       )
     }
 
-    // Sanitize host -- only allow IP/hostname
+    // Sanitize host — only allow IP/hostname
     const hostClean = host.trim()
     if (!/^[\w.\-:]+$/.test(hostClean)) {
       return NextResponse.json({ error: "Invalid host format" }, { status: 400 })
     }
 
-    const portNum = Math.min(65535, Math.max(1, Number(port) || 22))
+    const portNum = Math.min(65535, Math.max(1, Number(port) || 23))
 
     // Determine which commands to run
     const commandsToRun = command
       ? [{ key: "raw", cmd: command.trim() }]
       : OSPF_COMMANDS
 
-    // Execute SSH
-    const rawOutput = await execSSH(
+    // Execute Telnet
+    const rawOutput = await execTelnet(
       hostClean,
       portNum,
       username.trim(),
       password,
+      enablePassword,
       commandsToRun.map((c) => c.cmd)
     )
 
@@ -247,7 +295,7 @@ export async function POST(request: Request) {
     const hasOutput = Object.values(commandResults).some((v) => v && v.trim().length > 0)
     if (!hasOutput) {
       return NextResponse.json(
-        { error: "No output received from router. Check if OSPF is configured." },
+        { error: "No output received from router. Check if OSPF is configured and Telnet is enabled." },
         { status: 500 }
       )
     }
@@ -259,8 +307,8 @@ export async function POST(request: Request) {
       timestamp: Date.now(),
     })
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown SSH error"
-    console.error("[v0] SSH error:", message)
+    const message = err instanceof Error ? err.message : "Unknown Telnet error"
+    console.error("[v0] Telnet error:", message)
     return NextResponse.json({ error: message }, { status: 500 })
   }
 }

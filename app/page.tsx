@@ -211,10 +211,10 @@ export default function Page() {
     }, 50)
   }, [multiInput, layout, spacingMultiplier, topology, nodes, edges, notifyChanges, autoFitView])
 
-  // ── SSH data received ──
-  const handleSSHData = useCallback(
+  // ── Telnet data received ──
+  const handleTelnetData = useCallback(
     (data: string, host: string) => {
-      // data is a JSON string of MultiCommandInput keys (from updated ssh-fetch route)
+      // data is a JSON string of MultiCommandInput keys (from Telnet fetch route)
       // or a raw string (fallback for custom single command)
       let input: MultiCommandInput
       try {
@@ -273,7 +273,7 @@ export default function Page() {
           body: JSON.stringify({
             topology: parsed,
             raw_text: input.raw || input.showIpOspfDatabaseRouter || data,
-            source: "ssh",
+            source: "telnet",
             host,
             name: `${host} — ${parsed.routers.length} routers`,
           }),
@@ -664,7 +664,7 @@ export default function Page() {
                     onChange={setMultiInput}
                     onParse={handleParse}
                     onClear={handleClear}
-                    onSSHData={handleSSHData}
+                    onSSHData={handleTelnetData}
                     isParsing={isParsing}
                     parseError={parseError}
                   />

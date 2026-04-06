@@ -201,11 +201,11 @@ export function SnapshotsPanel({ onLoadSnapshot, onSaveSnapshot, isSaving }: Sna
                 <span
                   className="text-[9px] px-1.5 py-0.5 rounded font-medium uppercase tracking-wide w-fit"
                   style={{
-                    backgroundColor: snap.source === "ssh" ? "#38bdf820" : "#2dd4a020",
-                    color: snap.source === "ssh" ? "#38bdf8" : "#2dd4a0",
+                    backgroundColor: snap.source === "telnet" ? "#38bdf820" : "#2dd4a020",
+                    color: snap.source === "telnet" ? "#38bdf8" : "#2dd4a0",
                   }}
                 >
-                  {snap.source === "ssh" ? "SSH" : "Manual"}
+                  {snap.source === "telnet" ? "Telnet" : "Manual"}
                 </span>
               </div>
             ))

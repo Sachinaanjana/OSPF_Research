@@ -215,7 +215,7 @@ export function InputPanel({
 
   // SSH state
   const [sshHost, setSSHHost] = useState("")
-  const [sshPort, setSSHPort] = useState("22")
+  const [sshPort, setSSHPort] = useState("23")
   const [sshUser, setSSHUser] = useState("")
   const [sshPass, setSSHPass] = useState("")
   const [sshEnable, setSSHEnable] = useState("")
@@ -254,7 +254,7 @@ export function InputPanel({
   // SSH fetch
   const handleSSHFetch = useCallback(async () => {
     if (!sshHost || !sshUser || !sshPass) return
-    setSSHStatus({ state: "connecting", message: `Connecting to ${sshHost}...` })
+    setSSHStatus({ state: "connecting", message: `Telnet connecting to ${sshHost}...` })
 
     try {
       const res = await fetch("/api/ssh-fetch", {
@@ -262,7 +262,7 @@ export function InputPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           host: sshHost.trim(),
-          port: parseInt(sshPort) || 22,
+          port: parseInt(sshPort) || 23,
           username: sshUser.trim(),
           password: sshPass,
           command: sshCommand.trim() || undefined,
@@ -271,7 +271,7 @@ export function InputPanel({
       })
       const data = await res.json()
       if (!res.ok || data.error) {
-        setSSHStatus({ state: "error", message: data.error || "SSH connection failed" })
+        setSSHStatus({ state: "error", message: data.error || "Telnet connection failed" })
         return
       }
       setSSHStatus({ state: "success", message: `Data received from ${sshHost}`, lastConnected: Date.now() })
@@ -286,7 +286,7 @@ export function InputPanel({
     const name = profileName.trim() || `${sshHost}:${sshPort}`
     const newProfile: SavedProfile = {
       id: Date.now().toString(36), name,
-      host: sshHost, port: parseInt(sshPort) || 22,
+      host: sshHost, port: parseInt(sshPort) || 23,
       username: sshUser, command: sshCommand,
     }
     const updated = [...profiles, newProfile]
@@ -325,11 +325,11 @@ export function InputPanel({
               Commands
             </TabsTrigger>
             <TabsTrigger
-              value="ssh"
+              value="telnet"
               className="text-xs gap-1.5 data-[state=active]:bg-card data-[state=active]:text-foreground"
             >
               <Terminal className="w-3.5 h-3.5" />
-              SSH Connect
+              Telnet Connect
             </TabsTrigger>
           </TabsList>
         </div>
@@ -405,8 +405,8 @@ export function InputPanel({
           </ScrollArea>
         </TabsContent>
 
-        {/* ── SSH Tab ── */}
-        <TabsContent value="ssh" className="flex-1 flex flex-col mt-0 overflow-hidden">
+        {/* ── Telnet Tab ── */}
+        <TabsContent value="telnet" className="flex-1 flex flex-col mt-0 overflow-hidden">
           <ScrollArea className="flex-1">
             <div className="flex flex-col px-4 pb-4 gap-3">
               {/* Status bar */}
@@ -491,7 +491,7 @@ export function InputPanel({
                   </div>
                   <div className="flex flex-col gap-1">
                     <Label className="text-[10px] text-muted-foreground">Port</Label>
-                    <Input value={sshPort} onChange={(e) => setSSHPort(e.target.value)} placeholder="22" className="h-8 text-xs font-mono bg-secondary/30 border-border" disabled={isSSHBusy} />
+                    <Input value={sshPort} onChange={(e) => setSSHPort(e.target.value)} placeholder="23" className="h-8 text-xs font-mono bg-secondary/30 border-border" disabled={isSSHBusy} />
                   </div>
                 </div>
                 <div className="flex flex-col gap-1">
