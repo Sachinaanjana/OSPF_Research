@@ -11,12 +11,13 @@ const OSPF_COMMANDS: Array<{ key: string; cmd: string }> = [
   { key: "showIpRouteOspf", cmd: "show ip route ospf" },
 ]
 
-const TELNET_TIMEOUT = 60000 // 60 seconds total
-const COMMAND_DELAY = 300 // ms between commands
-const PROMPT_WAIT = 1500 // ms to wait for prompt after command
+const TELNET_TIMEOUT = 90000 // 90 seconds total (OSPF database can be large)
+const COMMAND_DELAY = 500 // ms between commands
+const PROMPT_WAIT = 2000 // ms to wait for prompt after command
+const DATA_SETTLE_TIME = 1000 // ms to wait after last data chunk before considering output complete
 
 /**
- * Execute Telnet commands to a Cisco IOS device.
+ * Execute Telnet commands to a Cisco IOS/IOS-XE device.
  * Telnet uses raw TCP on port 23 — no encryption algorithm negotiation required.
  */
 function execTelnet(
@@ -34,24 +35,40 @@ function execTelnet(
     let commandIndex = -1 // -1 = login phase, 0+ = command execution
     let inEnableMode = false
     let enableAttempted = false
+    let usernameEntered = false
+    let passwordEntered = false
+    let lastDataTime = Date.now()
+    let settleTimer: ReturnType<typeof setTimeout> | null = null
 
-    // Queue of commands to send: terminal length 0, then user commands, then exit
-    const cmdQueue = ["terminal length 0", ...commands, "exit"]
+    // Queue of commands to send: terminal length 0, then user commands
+    const cmdQueue = ["terminal length 0", "terminal width 512", ...commands]
+
+    const log = (msg: string) => {
+      console.log(`[v0] Telnet ${host}: ${msg}`)
+    }
 
     const timer = setTimeout(() => {
       if (!finished) {
         finished = true
+        log(`Timeout after ${TELNET_TIMEOUT / 1000}s. Output so far: ${output.length} bytes`)
         socket.destroy()
-        reject(new Error(`Telnet connection timed out after ${TELNET_TIMEOUT / 1000}s`))
+        // Return partial output instead of failing
+        if (output.length > 100) {
+          resolve(output)
+        } else {
+          reject(new Error(`Telnet connection timed out after ${TELNET_TIMEOUT / 1000}s`))
+        }
       }
     }, TELNET_TIMEOUT)
 
     const cleanup = () => {
       clearTimeout(timer)
+      if (settleTimer) clearTimeout(settleTimer)
       if (!socket.destroyed) socket.destroy()
     }
 
     const sendCommand = (cmd: string) => {
+      log(`Sending: ${cmd.substring(0, 50)}${cmd.length > 50 ? "..." : ""}`)
       socket.write(cmd + "\r\n")
     }
 
@@ -64,64 +81,99 @@ function execTelnet(
           }
         }, COMMAND_DELAY)
       } else {
-        // All commands sent, wait for final output then close
+        // All commands sent, wait for final output then close gracefully
+        log("All commands sent, waiting for final output...")
         setTimeout(() => {
           if (!finished) {
             finished = true
-            cleanup()
-            resolve(output)
+            sendCommand("exit")
+            setTimeout(() => {
+              cleanup()
+              resolve(output)
+            }, 500)
           }
         }, PROMPT_WAIT)
       }
     }
 
+    // Clean Telnet IAC sequences from text
+    const cleanTelnet = (text: string) => {
+      return text
+        .replace(/\xff[\xfb\xfc\xfd\xfe]./g, "") // IAC WILL/WONT/DO/DONT
+        .replace(/\xff\xfa[\s\S]*?\xff\xf0/g, "") // IAC SB...SE subnegotiation
+        .replace(/\xff\xff/g, "\xff") // Escaped 0xFF
+    }
+
+    // Cisco prompt patterns (handles hostnames with brackets like NMC-ASR1001HX[0.110])
+    const PRIV_PROMPT = /[\w\-\.\[\]]+#\s*$/
+    const USER_PROMPT = /[\w\-\.\[\]]+>\s*$/
+    const USERNAME_PROMPT = /[Uu]sername:\s*$|[Ll]ogin:\s*$/
+    const PASSWORD_PROMPT = /[Pp]assword:\s*$/
+
     socket.on("connect", () => {
-      // Connected, wait for login prompt
+      log("TCP connected, waiting for banner/prompt...")
     })
 
     socket.on("data", (data: Buffer) => {
       const chunk = data.toString()
       output += chunk
+      lastDataTime = Date.now()
 
-      // Strip Telnet IAC sequences for prompt detection
-      const cleanChunk = chunk.replace(/\xff[\xfb\xfc\xfd\xfe].|\xff\xfa[\s\S]*?\xff\xf0/g, "")
-      const cleanOutput = output.replace(/\xff[\xfb\xfc\xfd\xfe].|\xff\xfa[\s\S]*?\xff\xf0/g, "")
+      // Reset settle timer on each data chunk
+      if (settleTimer) clearTimeout(settleTimer)
+
+      const cleanChunk = cleanTelnet(chunk)
+      const cleanOutput = cleanTelnet(output)
+      const last500 = cleanOutput.slice(-500) // Only check last 500 chars for prompts
 
       // Login phase
       if (commandIndex === -1) {
         // Username prompt
-        if (/[Uu]sername[:\s]*$/.test(cleanOutput) || /[Ll]ogin[:\s]*$/.test(cleanOutput)) {
+        if (USERNAME_PROMPT.test(last500) && !usernameEntered) {
+          usernameEntered = true
+          log("Username prompt detected")
           sendCommand(username)
           return
         }
-        // Password prompt (during login)
-        if (/[Pp]assword[:\s]*$/.test(cleanOutput) && !inEnableMode) {
+
+        // Password prompt (during login, before enable mode)
+        if (PASSWORD_PROMPT.test(last500) && !passwordEntered && !enableAttempted) {
+          passwordEntered = true
+          log("Password prompt detected")
           sendCommand(password)
           return
         }
-        // Privileged EXEC prompt (Router#) — ready to send commands
-        if (/[\w\-\.]+#\s*$/.test(cleanOutput)) {
-          inEnableMode = true
-          processNextCommand()
+
+        // Privileged EXEC prompt (Router#) — already in enable mode
+        if (PRIV_PROMPT.test(last500)) {
+          if (!inEnableMode) {
+            inEnableMode = true
+            log("Privileged EXEC prompt detected, starting commands...")
+            processNextCommand()
+          }
           return
         }
+
         // User EXEC prompt (Router>) — need to enter enable mode
-        if (/[\w\-\.]+>\s*$/.test(cleanOutput)) {
-          if (!enableAttempted) {
-            enableAttempted = true
-            sendCommand("enable")
-            return
-          }
+        if (USER_PROMPT.test(last500) && !enableAttempted) {
+          enableAttempted = true
+          log("User EXEC prompt detected, entering enable mode...")
+          sendCommand("enable")
+          return
         }
+
         // Enable password prompt
-        if (/[Pp]assword[:\s]*$/.test(cleanOutput) && enableAttempted && !inEnableMode) {
+        if (PASSWORD_PROMPT.test(last500) && enableAttempted && !inEnableMode) {
+          log("Enable password prompt detected")
           sendCommand(enablePassword || password)
           return
         }
+
         // Authentication failed
-        if (/[Aa]uthentication\s+[Ff]ailed|[Bb]ad\s+[Pp]assword|[Ll]ogin\s+[Ii]nvalid|[Aa]ccess\s+[Dd]enied/i.test(cleanOutput)) {
+        if (/[Aa]uthentication\s*[Ff]ailed|[Bb]ad\s*[Pp]assword|[Ll]ogin\s*[Ii]nvalid|[Aa]ccess\s*[Dd]enied|% [Aa]ccess denied/i.test(cleanOutput)) {
           finished = true
           cleanup()
+          log("Authentication failed")
           reject(new Error("Authentication failed: Invalid username or password"))
           return
         }
@@ -129,10 +181,14 @@ function execTelnet(
 
       // Command execution phase — detect prompt to send next command
       if (commandIndex >= 0 && commandIndex < cmdQueue.length) {
-        // Check if we see a privileged prompt after the current command
-        if (/[\w\-\.]+#\s*$/.test(cleanChunk)) {
-          processNextCommand()
-        }
+        // Use settle timer: wait for data to stop flowing, then check for prompt
+        settleTimer = setTimeout(() => {
+          const latestClean = cleanTelnet(output).slice(-500)
+          if (PRIV_PROMPT.test(latestClean)) {
+            log(`Command ${commandIndex + 1}/${cmdQueue.length} complete`)
+            processNextCommand()
+          }
+        }, DATA_SETTLE_TIME)
       }
     })
 
@@ -140,11 +196,15 @@ function execTelnet(
       if (finished) return
       finished = true
       cleanup()
+
+      log(`Socket error: ${err.message}`)
       
       if (err.message.includes("ECONNREFUSED")) {
-        reject(new Error("Connection refused: Telnet port may be blocked or not enabled on the router"))
+        reject(new Error("Connection refused: Telnet port 23 may be blocked or not enabled on the router"))
       } else if (err.message.includes("ETIMEDOUT") || err.message.includes("EHOSTUNREACH")) {
         reject(new Error("Connection timed out: Router is unreachable"))
+      } else if (err.message.includes("ECONNRESET")) {
+        reject(new Error("Connection reset by router: Check if Telnet is allowed from this IP"))
       } else {
         reject(new Error(`Telnet error: ${err.message}`))
       }
@@ -154,6 +214,7 @@ function execTelnet(
       if (finished) return
       finished = true
       cleanup()
+      log(`Connection closed. Total output: ${output.length} bytes`)
       resolve(output)
     })
 
@@ -161,6 +222,7 @@ function execTelnet(
       if (finished) return
       finished = true
       cleanup()
+      log("Socket timeout")
       reject(new Error("Telnet socket timeout"))
     })
 
@@ -168,6 +230,7 @@ function execTelnet(
     socket.setTimeout(TELNET_TIMEOUT)
 
     // Connect
+    log(`Connecting to ${host}:${port}...`)
     socket.connect(port, host)
   })
 }
@@ -237,6 +300,8 @@ function parseCommandOutput(
 }
 
 export async function POST(request: Request) {
+  const startTime = Date.now()
+  
   try {
     const body = await request.json()
     const {
@@ -265,11 +330,13 @@ export async function POST(request: Request) {
 
     // Sanitize host — only allow IP/hostname
     const hostClean = host.trim()
-    if (!/^[\w.\-:]+$/.test(hostClean)) {
+    if (!/^[\w.\-:\[\]]+$/.test(hostClean)) {
       return NextResponse.json({ error: "Invalid host format" }, { status: 400 })
     }
 
     const portNum = Math.min(65535, Math.max(1, Number(port) || 23))
+
+    console.log(`[v0] Starting Telnet fetch to ${hostClean}:${portNum}`)
 
     // Determine which commands to run
     const commandsToRun = command
@@ -286,16 +353,27 @@ export async function POST(request: Request) {
       commandsToRun.map((c) => c.cmd)
     )
 
+    console.log(`[v0] Telnet completed in ${Date.now() - startTime}ms, got ${rawOutput.length} bytes`)
+
     // Parse the output into per-command results
     const commandResults = command
       ? { raw: rawOutput }
       : parseCommandOutput(rawOutput, OSPF_COMMANDS)
 
+    // Log parsed results
+    for (const [key, val] of Object.entries(commandResults)) {
+      console.log(`[v0] Parsed ${key}: ${(val as string)?.length || 0} chars`)
+    }
+
     // Check if we got any meaningful output
-    const hasOutput = Object.values(commandResults).some((v) => v && v.trim().length > 0)
+    const hasOutput = Object.values(commandResults).some((v) => v && v.trim().length > 50)
     if (!hasOutput) {
+      console.log(`[v0] No meaningful output. Raw output preview: ${rawOutput.substring(0, 500)}`)
       return NextResponse.json(
-        { error: "No output received from router. Check if OSPF is configured and Telnet is enabled." },
+        { 
+          error: "No OSPF data found in router output. Verify OSPF is configured and the user has privilege level 15.",
+          debug: rawOutput.substring(0, 1000)
+        },
         { status: 500 }
       )
     }
@@ -308,7 +386,7 @@ export async function POST(request: Request) {
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown Telnet error"
-    console.error("[v0] Telnet error:", message)
+    console.error(`[v0] Telnet error after ${Date.now() - startTime}ms:`, message)
     return NextResponse.json({ error: message }, { status: 500 })
   }
 }
