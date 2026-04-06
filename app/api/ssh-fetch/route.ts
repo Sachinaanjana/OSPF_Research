@@ -186,12 +186,12 @@ export async function POST(request: Request) {
         username: username.trim(),
         password,
         readyTimeout: SSH_TIMEOUT,
+        // ssh2@1.11.0 pure-JS mode fully supports these legacy algorithms
+        // without needing the native C++ binding (which requires `make`).
         algorithms: {
-          // Key exchange — list every method the router advertises first so
-          // ssh2 will negotiate one successfully even on old Cisco IOS boxes.
           kex: [
-            "diffie-hellman-group-exchange-sha1",   // ← what the router offers
-            "diffie-hellman-group14-sha1",           // ← what the router offers
+            "diffie-hellman-group-exchange-sha1",  // Cisco IOS primary offer
+            "diffie-hellman-group14-sha1",          // Cisco IOS secondary offer
             "diffie-hellman-group-exchange-sha256",
             "diffie-hellman-group14-sha256",
             "diffie-hellman-group1-sha1",
@@ -199,10 +199,8 @@ export async function POST(request: Request) {
             "ecdh-sha2-nistp384",
             "ecdh-sha2-nistp521",
           ],
-          // Host-key — older IOS sends ssh-rsa; Node ≥ 21 / ssh2 ≥ 1.15
-          // disables it by default, so we must re-enable it explicitly.
           serverHostKey: [
-            "ssh-rsa",
+            "ssh-rsa",            // Cisco IOS only offers this; modern ssh2 disables it by default
             "ecdsa-sha2-nistp256",
             "ecdsa-sha2-nistp384",
             "ecdsa-sha2-nistp521",
@@ -223,8 +221,9 @@ export async function POST(request: Request) {
             "hmac-md5",
           ],
         },
-        // Keyboard-interactive fallback for Cisco password prompts
+        // Enable keyboard-interactive as a fallback auth method alongside password
         tryKeyboard: true,
+        authHandler: ["password", "keyboard-interactive"],
       })
     })
 
