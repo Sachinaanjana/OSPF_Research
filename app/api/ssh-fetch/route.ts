@@ -186,7 +186,7 @@ export async function POST(request: Request) {
         username: username.trim(),
         password,
         readyTimeout: SSH_TIMEOUT,
-        // ssh2@1.11.0 pure-JS mode fully supports these legacy algorithms
+        // ssh2@1.6.0 pure-JS mode fully supports these legacy algorithms
         // without needing the native C++ binding (which requires `make`).
         algorithms: {
           kex: [
@@ -223,7 +223,6 @@ export async function POST(request: Request) {
         },
         // Enable keyboard-interactive as a fallback auth method alongside password
         tryKeyboard: true,
-        authHandler: ["password", "keyboard-interactive"],
       })
     })
 
