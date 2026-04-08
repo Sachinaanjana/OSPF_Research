@@ -185,14 +185,15 @@ export function InputPanel({
     setLoadingField(key)
     try {
       const res = await fetch("/api/ospf-file")
-      const data = await res.json()
+      const json = await res.json()
       
-      if (!res.ok || data.error) {
-        toast.error(data.error || "Failed to load file")
+      if (!res.ok || json.error) {
+        toast.error(json.error || "Failed to load file")
         return
       }
       
-      onChange({ ...value, [key]: data.content })
+      // API returns 'data' property with the file content
+      onChange({ ...value, [key]: json.data })
       toast.success("File loaded successfully")
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to load file")
@@ -206,18 +207,19 @@ export function InputPanel({
     setIsLoadingAll(true)
     try {
       const res = await fetch("/api/ospf-file")
-      const data = await res.json()
+      const json = await res.json()
       
-      if (!res.ok || data.error) {
-        toast.error(data.error || "Failed to load file")
+      if (!res.ok || json.error) {
+        toast.error(json.error || "Failed to load file")
         return
       }
       
+      // API returns 'data' property with the file content
       // Put the file content into showIpOspfDatabaseRouter field
       const newValue = { 
         ...value, 
-        showIpOspfDatabaseRouter: data.content,
-        raw: data.content 
+        showIpOspfDatabaseRouter: json.data,
+        raw: json.data 
       }
       onChange(newValue)
       toast.success("File loaded, generating topology...")
