@@ -224,6 +224,11 @@ export function InputPanel({
   const [showProfiles, setShowProfiles] = useState(false)
   const [profileName, setProfileName] = useState("")
   const [profiles, setProfiles] = useState<SavedProfile[]>([])
+  const [sshStatus, setSSHStatus] = useState<{
+    state: "idle" | "connecting" | "fetching" | "success" | "error"
+    message?: string
+    lastConnected?: number
+  }>({ state: "idle" })
 
   useEffect(() => {
     setProfiles(loadProfiles())
