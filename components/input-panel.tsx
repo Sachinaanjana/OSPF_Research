@@ -25,7 +25,10 @@ import {
   EyeOff,
   Database,
   ChevronRight,
+  FileText,
+  RefreshCw,
 } from "lucide-react"
+import { useOspfFilePolling } from "@/lib/use-ospf-file-polling"
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -316,11 +319,28 @@ export function InputPanel({
   const isSSHBusy = sshStatus.state === "connecting" || sshStatus.state === "fetching"
   const canConnect = sshHost.trim() && sshUser.trim() && sshPass.trim() && !isSSHBusy
 
+  // File polling state
+  const [filePollingEnabled, setFilePollingEnabled] = useState(false)
+
+  // File polling hook - reads /root/ospf_upload_file_dir/ospf_data.txt every 5 minutes
+  const filePolling = useOspfFilePolling({
+    enabled: filePollingEnabled,
+    onDataReceived: (data) => {
+      // Parse the file data and update the topology
+      // The file should contain "show ip ospf database router" output
+      const input: MultiCommandInput = {
+        showIpOspfDatabaseRouter: data,
+        raw: data,
+      }
+      onMultiInputChange?.(input)
+    },
+  })
+
   return (
     <div className="flex flex-col h-full">
       <Tabs defaultValue="commands" className="flex flex-col h-full">
         <div className="px-4 pt-3 pb-1">
-          <TabsList className="w-full grid grid-cols-2 h-9 bg-secondary/50">
+          <TabsList className="w-full grid grid-cols-3 h-9 bg-secondary/50">
             <TabsTrigger
               value="commands"
               className="text-xs gap-1.5 data-[state=active]:bg-card data-[state=active]:text-foreground"
@@ -333,7 +353,14 @@ export function InputPanel({
               className="text-xs gap-1.5 data-[state=active]:bg-card data-[state=active]:text-foreground"
             >
               <Terminal className="w-3.5 h-3.5" />
-              Telnet Connect
+              Telnet
+            </TabsTrigger>
+            <TabsTrigger
+              value="file"
+              className="text-xs gap-1.5 data-[state=active]:bg-card data-[state=active]:text-foreground"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              Auto-Poll
             </TabsTrigger>
           </TabsList>
         </div>
@@ -542,6 +569,112 @@ export function InputPanel({
                 )}
               </div>
 
+            </div>
+          </ScrollArea>
+        </TabsContent>
+
+        {/* ── File Auto-Poll Tab ── */}
+        <TabsContent value="file" className="flex-1 flex flex-col mt-0 overflow-hidden">
+          <ScrollArea className="flex-1">
+            <div className="px-4 py-3 space-y-4">
+              {/* Info Section */}
+              <div className="p-3 rounded-lg bg-primary/5 border border-primary/20">
+                <h3 className="text-sm font-semibold text-foreground mb-1.5 flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-primary" />
+                  Auto-Poll OSPF File
+                </h3>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Automatically reads the OSPF data file from the server every 5 minutes and updates the topology diagram. A notification will appear on each poll.
+                </p>
+                <p className="text-xs text-muted-foreground/70 mt-2 font-mono">
+                  File: /root/ospf_upload_file_dir/ospf_data.txt
+                </p>
+              </div>
+
+              {/* Status Section */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/30 border border-border">
+                  <div className="flex flex-col gap-1">
+                    <span className="text-sm font-medium">
+                      {filePollingEnabled ? (
+                        <span className="text-primary flex items-center gap-1.5">
+                          <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
+                          Auto-polling active
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">Auto-polling disabled</span>
+                      )}
+                    </span>
+                    {filePolling.lastPoll && (
+                      <span className="text-[10px] text-muted-foreground">
+                        Last poll: {filePolling.lastPoll.toLocaleTimeString()}
+                      </span>
+                    )}
+                    {filePolling.nextPoll && filePollingEnabled && (
+                      <span className="text-[10px] text-muted-foreground">
+                        Next poll: {filePolling.nextPoll.toLocaleTimeString()}
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setFilePollingEnabled(!filePollingEnabled)}
+                    className={`relative w-12 h-6 rounded-full transition-colors ${
+                      filePollingEnabled
+                        ? "bg-primary"
+                        : "bg-muted-foreground/30"
+                    } cursor-pointer`}
+                    aria-label={filePollingEnabled ? "Disable auto-polling" : "Enable auto-polling"}
+                  >
+                    <span
+                      className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                        filePollingEnabled ? "translate-x-6" : "translate-x-1"
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {/* Stats */}
+                {filePolling.pollCount > 0 && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="p-2 rounded bg-secondary/20 border border-border">
+                      <span className="text-[10px] text-muted-foreground block">Total Polls</span>
+                      <span className="text-sm font-semibold text-foreground">{filePolling.pollCount}</span>
+                    </div>
+                    {filePolling.lastModified && (
+                      <div className="p-2 rounded bg-secondary/20 border border-border">
+                        <span className="text-[10px] text-muted-foreground block">File Modified</span>
+                        <span className="text-[10px] font-medium text-foreground">
+                          {new Date(filePolling.lastModified).toLocaleString()}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Error Display */}
+                {filePolling.error && (
+                  <div className="p-2 rounded bg-destructive/10 border border-destructive/30">
+                    <span className="text-xs text-destructive">{filePolling.error}</span>
+                  </div>
+                )}
+
+                {/* Manual Poll Button */}
+                <Button
+                  onClick={filePolling.pollNow}
+                  disabled={filePolling.isPolling}
+                  variant="outline"
+                  className="w-full gap-2"
+                  size="sm"
+                >
+                  {filePolling.isPolling ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  )}
+                  {filePolling.isPolling ? "Polling..." : "Poll Now"}
+                </Button>
+              </div>
             </div>
           </ScrollArea>
         </TabsContent>
