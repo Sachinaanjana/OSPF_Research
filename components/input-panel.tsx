@@ -25,10 +25,7 @@ import {
   EyeOff,
   Database,
   ChevronRight,
-  RefreshCw,
-  CloudUpload,
 } from "lucide-react"
-import { useOspfAutoRefresh } from "@/lib/use-ospf-auto-refresh"
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -226,7 +223,7 @@ export function InputPanel({
   const [showPassword, setShowPassword] = useState(false)
   const [showProfiles, setShowProfiles] = useState(false)
   const [profileName, setProfileName] = useState("")
-  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false)
+  const [profiles, setProfiles] = useState<SavedProfile[]>([])
 
   useEffect(() => {
     setProfiles(loadProfiles())
@@ -313,24 +310,6 @@ export function InputPanel({
 
   const isSSHBusy = sshStatus.state === "connecting" || sshStatus.state === "fetching"
   const canConnect = sshHost.trim() && sshUser.trim() && sshPass.trim() && !isSSHBusy
-
-  // Auto-refresh hook for 5-minute interval uploads
-  const autoRefresh = useOspfAutoRefresh(
-    {
-      enabled: autoRefreshEnabled,
-      host: sshHost,
-      port: parseInt(sshPort) || 23,
-      username: sshUser,
-      password: sshPass,
-      enablePassword: sshEnable || undefined,
-    },
-    (data) => {
-      // When auto-refresh gets new data, update the topology
-      if (onSSHData) {
-        onSSHData(data, sshHost)
-      }
-    }
-  )
 
   return (
     <div className="flex flex-col h-full">
@@ -558,76 +537,6 @@ export function InputPanel({
                 )}
               </div>
 
-              {/* Auto-Refresh Section */}
-              <div className="flex flex-col gap-2 mt-3 pt-3 border-t border-border">
-                <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
-                  <CloudUpload className="w-3.5 h-3.5" />
-                  Auto-Save (Every 5 Minutes)
-                </h3>
-                
-                <div className="flex items-center justify-between gap-2 p-2 rounded-lg bg-secondary/30 border border-border">
-                  <div className="flex flex-col gap-0.5">
-                    <span className="text-xs font-medium">
-                      {autoRefreshEnabled ? "Auto-refresh enabled" : "Auto-refresh disabled"}
-                    </span>
-                    {autoRefresh.lastRefresh && (
-                      <span className="text-[10px] text-muted-foreground">
-                        Last: {autoRefresh.lastRefresh.toLocaleTimeString()}
-                      </span>
-                    )}
-                    {autoRefresh.nextRefresh && autoRefreshEnabled && (
-                      <span className="text-[10px] text-muted-foreground">
-                        Next: {autoRefresh.nextRefresh.toLocaleTimeString()}
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {autoRefreshEnabled && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={autoRefresh.refreshNow}
-                        disabled={autoRefresh.isRefreshing || !canConnect}
-                        className="h-7 text-xs gap-1"
-                      >
-                        {autoRefresh.isRefreshing ? (
-                          <Loader2 className="w-3 h-3 animate-spin" />
-                        ) : (
-                          <RefreshCw className="w-3 h-3" />
-                        )}
-                        Refresh Now
-                      </Button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => setAutoRefreshEnabled(!autoRefreshEnabled)}
-                      disabled={!sshHost || !sshUser || !sshPass}
-                      className={`relative w-10 h-5 rounded-full transition-colors ${
-                        autoRefreshEnabled
-                          ? "bg-primary"
-                          : "bg-muted-foreground/30"
-                      } ${(!sshHost || !sshUser || !sshPass) ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
-                      aria-label={autoRefreshEnabled ? "Disable auto-refresh" : "Enable auto-refresh"}
-                    >
-                      <span
-                        className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
-                          autoRefreshEnabled ? "translate-x-5" : "translate-x-0.5"
-                        }`}
-                      />
-                    </button>
-                  </div>
-                </div>
-
-                {autoRefresh.error && (
-                  <p className="text-[10px] text-destructive bg-destructive/10 rounded px-2 py-1">
-                    {autoRefresh.error}
-                  </p>
-                )}
-
-                <p className="text-[10px] text-muted-foreground/60 leading-relaxed">
-                  When enabled, fetches OSPF data every 5 minutes and saves &quot;show ip ospf database router&quot; output to cloud storage with a notification.
-                </p>
-              </div>
             </div>
           </ScrollArea>
         </TabsContent>
