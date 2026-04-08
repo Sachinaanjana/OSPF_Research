@@ -329,10 +329,15 @@ export function InputPanel({
       // Parse the file data and update the topology
       // The file should contain "show ip ospf database router" output
       const input: MultiCommandInput = {
+        ...value,
         showIpOspfDatabaseRouter: data,
         raw: data,
       }
-      onMultiInputChange?.(input)
+      onChange(input)
+      // Auto-parse after a short delay to allow state update
+      setTimeout(() => {
+        onParse()
+      }, 100)
     },
   })
 
@@ -581,13 +586,13 @@ export function InputPanel({
               <div className="p-3 rounded-lg bg-primary/5 border border-primary/20">
                 <h3 className="text-sm font-semibold text-foreground mb-1.5 flex items-center gap-2">
                   <FileText className="w-4 h-4 text-primary" />
-                  Auto-Poll OSPF File
+                  Load OSPF File & Visualize
                 </h3>
                 <p className="text-xs text-muted-foreground leading-relaxed">
-                  Automatically reads the OSPF data file from the server every 5 minutes and updates the topology diagram. A notification will appear on each poll.
+                  Reads &quot;show ip ospf database router&quot; output from the server file and automatically generates the network topology. Enable auto-poll to refresh every 5 minutes.
                 </p>
-                <p className="text-xs text-muted-foreground/70 mt-2 font-mono">
-                  File: /root/ospf_upload_file_dir/ospf_data.txt
+                <p className="text-xs text-muted-foreground/70 mt-2 font-mono bg-secondary/30 px-2 py-1 rounded">
+                  /root/ospf_upload_file_dir/ospf_data.txt
                 </p>
               </div>
 
@@ -659,21 +664,24 @@ export function InputPanel({
                   </div>
                 )}
 
-                {/* Manual Poll Button */}
+                {/* Manual Poll & Visualize Button */}
                 <Button
                   onClick={filePolling.pollNow}
-                  disabled={filePolling.isPolling}
-                  variant="outline"
+                  disabled={filePolling.isPolling || isParsing}
+                  variant="default"
                   className="w-full gap-2"
                   size="sm"
                 >
-                  {filePolling.isPolling ? (
+                  {filePolling.isPolling || isParsing ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
                   ) : (
-                    <RefreshCw className="w-3.5 h-3.5" />
+                    <Play className="w-3.5 h-3.5" />
                   )}
-                  {filePolling.isPolling ? "Polling..." : "Poll Now"}
+                  {filePolling.isPolling ? "Loading File..." : isParsing ? "Parsing..." : "Load File & Visualize"}
                 </Button>
+                <p className="text-[10px] text-muted-foreground text-center">
+                  Loads the OSPF file and automatically generates the topology diagram
+                </p>
               </div>
             </div>
           </ScrollArea>
