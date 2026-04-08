@@ -25,10 +25,10 @@ import {
   EyeOff,
   Database,
   ChevronRight,
+  FileText,
   RefreshCw,
-  CloudUpload,
 } from "lucide-react"
-import { useOspfAutoRefresh } from "@/lib/use-ospf-auto-refresh"
+import { useOspfFilePolling } from "@/lib/use-ospf-file-polling"
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -226,7 +226,12 @@ export function InputPanel({
   const [showPassword, setShowPassword] = useState(false)
   const [showProfiles, setShowProfiles] = useState(false)
   const [profileName, setProfileName] = useState("")
-  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false)
+  const [profiles, setProfiles] = useState<SavedProfile[]>([])
+  const [sshStatus, setSSHStatus] = useState<{
+    state: "idle" | "connecting" | "fetching" | "success" | "error"
+    message?: string
+    lastConnected?: number
+  }>({ state: "idle" })
 
   useEffect(() => {
     setProfiles(loadProfiles())
@@ -314,29 +319,28 @@ export function InputPanel({
   const isSSHBusy = sshStatus.state === "connecting" || sshStatus.state === "fetching"
   const canConnect = sshHost.trim() && sshUser.trim() && sshPass.trim() && !isSSHBusy
 
-  // Auto-refresh hook for 5-minute interval uploads
-  const autoRefresh = useOspfAutoRefresh(
-    {
-      enabled: autoRefreshEnabled,
-      host: sshHost,
-      port: parseInt(sshPort) || 23,
-      username: sshUser,
-      password: sshPass,
-      enablePassword: sshEnable || undefined,
-    },
-    (data) => {
-      // When auto-refresh gets new data, update the topology
-      if (onSSHData) {
-        onSSHData(data, sshHost)
+  // File polling state
+  const [filePollingEnabled, setFilePollingEnabled] = useState(false)
+
+  // File polling hook - reads /root/ospf_upload_file_dir/ospf_data.txt every 5 minutes
+  const filePolling = useOspfFilePolling({
+    enabled: filePollingEnabled,
+    onDataReceived: (data) => {
+      // Parse the file data and update the topology
+      // The file should contain "show ip ospf database router" output
+      const input: MultiCommandInput = {
+        showIpOspfDatabaseRouter: data,
+        raw: data,
       }
-    }
-  )
+      onMultiInputChange?.(input)
+    },
+  })
 
   return (
     <div className="flex flex-col h-full">
       <Tabs defaultValue="commands" className="flex flex-col h-full">
         <div className="px-4 pt-3 pb-1">
-          <TabsList className="w-full grid grid-cols-2 h-9 bg-secondary/50">
+          <TabsList className="w-full grid grid-cols-3 h-9 bg-secondary/50">
             <TabsTrigger
               value="commands"
               className="text-xs gap-1.5 data-[state=active]:bg-card data-[state=active]:text-foreground"
@@ -349,7 +353,14 @@ export function InputPanel({
               className="text-xs gap-1.5 data-[state=active]:bg-card data-[state=active]:text-foreground"
             >
               <Terminal className="w-3.5 h-3.5" />
-              Telnet Connect
+              Telnet
+            </TabsTrigger>
+            <TabsTrigger
+              value="file"
+              className="text-xs gap-1.5 data-[state=active]:bg-card data-[state=active]:text-foreground"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              Auto-Poll
             </TabsTrigger>
           </TabsList>
         </div>
@@ -558,75 +569,111 @@ export function InputPanel({
                 )}
               </div>
 
-              {/* Auto-Refresh Section */}
-              <div className="flex flex-col gap-2 mt-3 pt-3 border-t border-border">
-                <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
-                  <CloudUpload className="w-3.5 h-3.5" />
-                  Auto-Save (Every 5 Minutes)
+            </div>
+          </ScrollArea>
+        </TabsContent>
+
+        {/* ── File Auto-Poll Tab ── */}
+        <TabsContent value="file" className="flex-1 flex flex-col mt-0 overflow-hidden">
+          <ScrollArea className="flex-1">
+            <div className="px-4 py-3 space-y-4">
+              {/* Info Section */}
+              <div className="p-3 rounded-lg bg-primary/5 border border-primary/20">
+                <h3 className="text-sm font-semibold text-foreground mb-1.5 flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-primary" />
+                  Auto-Poll OSPF File
                 </h3>
-                
-                <div className="flex items-center justify-between gap-2 p-2 rounded-lg bg-secondary/30 border border-border">
-                  <div className="flex flex-col gap-0.5">
-                    <span className="text-xs font-medium">
-                      {autoRefreshEnabled ? "Auto-refresh enabled" : "Auto-refresh disabled"}
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Automatically reads the OSPF data file from the server every 5 minutes and updates the topology diagram. A notification will appear on each poll.
+                </p>
+                <p className="text-xs text-muted-foreground/70 mt-2 font-mono">
+                  File: /root/ospf_upload_file_dir/ospf_data.txt
+                </p>
+              </div>
+
+              {/* Status Section */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/30 border border-border">
+                  <div className="flex flex-col gap-1">
+                    <span className="text-sm font-medium">
+                      {filePollingEnabled ? (
+                        <span className="text-primary flex items-center gap-1.5">
+                          <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
+                          Auto-polling active
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">Auto-polling disabled</span>
+                      )}
                     </span>
-                    {autoRefresh.lastRefresh && (
+                    {filePolling.lastPoll && (
                       <span className="text-[10px] text-muted-foreground">
-                        Last: {autoRefresh.lastRefresh.toLocaleTimeString()}
+                        Last poll: {filePolling.lastPoll.toLocaleTimeString()}
                       </span>
                     )}
-                    {autoRefresh.nextRefresh && autoRefreshEnabled && (
+                    {filePolling.nextPoll && filePollingEnabled && (
                       <span className="text-[10px] text-muted-foreground">
-                        Next: {autoRefresh.nextRefresh.toLocaleTimeString()}
+                        Next poll: {filePolling.nextPoll.toLocaleTimeString()}
                       </span>
                     )}
                   </div>
-                  <div className="flex items-center gap-2">
-                    {autoRefreshEnabled && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={autoRefresh.refreshNow}
-                        disabled={autoRefresh.isRefreshing || !canConnect}
-                        className="h-7 text-xs gap-1"
-                      >
-                        {autoRefresh.isRefreshing ? (
-                          <Loader2 className="w-3 h-3 animate-spin" />
-                        ) : (
-                          <RefreshCw className="w-3 h-3" />
-                        )}
-                        Refresh Now
-                      </Button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => setAutoRefreshEnabled(!autoRefreshEnabled)}
-                      disabled={!sshHost || !sshUser || !sshPass}
-                      className={`relative w-10 h-5 rounded-full transition-colors ${
-                        autoRefreshEnabled
-                          ? "bg-primary"
-                          : "bg-muted-foreground/30"
-                      } ${(!sshHost || !sshUser || !sshPass) ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
-                      aria-label={autoRefreshEnabled ? "Disable auto-refresh" : "Enable auto-refresh"}
-                    >
-                      <span
-                        className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
-                          autoRefreshEnabled ? "translate-x-5" : "translate-x-0.5"
-                        }`}
-                      />
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setFilePollingEnabled(!filePollingEnabled)}
+                    className={`relative w-12 h-6 rounded-full transition-colors ${
+                      filePollingEnabled
+                        ? "bg-primary"
+                        : "bg-muted-foreground/30"
+                    } cursor-pointer`}
+                    aria-label={filePollingEnabled ? "Disable auto-polling" : "Enable auto-polling"}
+                  >
+                    <span
+                      className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                        filePollingEnabled ? "translate-x-6" : "translate-x-1"
+                      }`}
+                    />
+                  </button>
                 </div>
 
-                {autoRefresh.error && (
-                  <p className="text-[10px] text-destructive bg-destructive/10 rounded px-2 py-1">
-                    {autoRefresh.error}
-                  </p>
+                {/* Stats */}
+                {filePolling.pollCount > 0 && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="p-2 rounded bg-secondary/20 border border-border">
+                      <span className="text-[10px] text-muted-foreground block">Total Polls</span>
+                      <span className="text-sm font-semibold text-foreground">{filePolling.pollCount}</span>
+                    </div>
+                    {filePolling.lastModified && (
+                      <div className="p-2 rounded bg-secondary/20 border border-border">
+                        <span className="text-[10px] text-muted-foreground block">File Modified</span>
+                        <span className="text-[10px] font-medium text-foreground">
+                          {new Date(filePolling.lastModified).toLocaleString()}
+                        </span>
+                      </div>
+                    )}
+                  </div>
                 )}
 
-                <p className="text-[10px] text-muted-foreground/60 leading-relaxed">
-                  When enabled, fetches OSPF data every 5 minutes and saves &quot;show ip ospf database router&quot; output to cloud storage with a notification.
-                </p>
+                {/* Error Display */}
+                {filePolling.error && (
+                  <div className="p-2 rounded bg-destructive/10 border border-destructive/30">
+                    <span className="text-xs text-destructive">{filePolling.error}</span>
+                  </div>
+                )}
+
+                {/* Manual Poll Button */}
+                <Button
+                  onClick={filePolling.pollNow}
+                  disabled={filePolling.isPolling}
+                  variant="outline"
+                  className="w-full gap-2"
+                  size="sm"
+                >
+                  {filePolling.isPolling ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  )}
+                  {filePolling.isPolling ? "Polling..." : "Poll Now"}
+                </Button>
               </div>
             </div>
           </ScrollArea>
