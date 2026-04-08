@@ -1,51 +1,23 @@
 "use client"
 
-import { useRef, useState, useCallback, useEffect } from "react"
+import { useRef, useState, useCallback } from "react"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import type { MultiCommandInput } from "@/lib/ospf-parser"
 import {
   Play,
-  Upload,
   Trash2,
-  Terminal,
-  Wifi,
-  WifiOff,
   Loader2,
-  Clock,
-  Save,
   ChevronDown,
-  ChevronUp,
-  Server,
-  Eye,
-  EyeOff,
-  Database,
   ChevronRight,
   FileText,
   RefreshCw,
+  Download,
 } from "lucide-react"
-import { useOspfFilePolling } from "@/lib/use-ospf-file-polling"
+import { toast } from "sonner"
 
 // ── Types ──────────────────────────────────────────────────
-
-interface SavedProfile {
-  id: string
-  name: string
-  host: string
-  port: number
-  username: string
-  command: string
-}
-
-interface SSHStatus {
-  state: "idle" | "connecting" | "fetching" | "success" | "error"
-  message: string
-  lastConnected?: number
-}
 
 interface InputPanelProps {
   value: MultiCommandInput
@@ -55,20 +27,6 @@ interface InputPanelProps {
   onSSHData?: (data: string, host: string) => void
   isParsing: boolean
   parseError: string | null
-}
-
-const PROFILES_KEY = "ospf-ssh-profiles"
-
-function loadProfiles(): SavedProfile[] {
-  try {
-    const raw = localStorage.getItem(PROFILES_KEY)
-    return raw ? JSON.parse(raw) : []
-  } catch {
-    return []
-  }
-}
-function saveProfiles(profiles: SavedProfile[]) {
-  localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles))
 }
 
 // ── Command field definitions ──────────────────────────────
@@ -130,12 +88,14 @@ function CommandSection({
   field,
   value,
   onChange,
-  onFileUpload,
+  onGetFile,
+  isLoading,
 }: {
   field: (typeof COMMAND_FIELDS)[number]
   value: string
   onChange: (val: string) => void
-  onFileUpload: (key: keyof MultiCommandInput) => void
+  onGetFile: (key: keyof MultiCommandInput) => void
+  isLoading: boolean
 }) {
   const [open, setOpen] = useState(field.key === "showIpOspfDatabaseRouter")
   const filled = value.trim().length > 0
@@ -172,11 +132,16 @@ function CommandSection({
           <div className="flex items-center justify-end gap-1">
             <button
               type="button"
-              onClick={() => onFileUpload(field.key)}
-              className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground px-2 py-1 rounded-sm hover:bg-secondary/50 transition-colors"
+              onClick={() => onGetFile(field.key)}
+              disabled={isLoading}
+              className="flex items-center gap-1 text-[10px] text-primary hover:text-primary/80 px-2 py-1 rounded-sm hover:bg-primary/10 transition-colors disabled:opacity-50"
             >
-              <Upload className="w-3 h-3" />
-              Upload
+              {isLoading ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : (
+                <Download className="w-3 h-3" />
+              )}
+              Get from Server
             </button>
             {value && (
               <button
@@ -209,476 +174,156 @@ export function InputPanel({
   onChange,
   onParse,
   onClear,
-  onSSHData,
   isParsing,
   parseError,
 }: InputPanelProps) {
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const [fileTargetKey, setFileTargetKey] = useState<keyof MultiCommandInput>("showIpOspfDatabaseRouter")
+  const [loadingField, setLoadingField] = useState<keyof MultiCommandInput | null>(null)
+  const [isLoadingAll, setIsLoadingAll] = useState(false)
 
-  // SSH state
-  const [sshHost, setSSHHost] = useState("")
-  const [sshPort, setSSHPort] = useState("23")
-  const [sshUser, setSSHUser] = useState("")
-  const [sshPass, setSSHPass] = useState("")
-  const [sshEnable, setSSHEnable] = useState("")
-  const [sshCommand, setSSHCommand] = useState("")
-  const [showPassword, setShowPassword] = useState(false)
-  const [showProfiles, setShowProfiles] = useState(false)
-  const [profileName, setProfileName] = useState("")
-  const [profiles, setProfiles] = useState<SavedProfile[]>([])
-  const [sshStatus, setSSHStatus] = useState<{
-    state: "idle" | "connecting" | "fetching" | "success" | "error"
-    message?: string
-    lastConnected?: number
-  }>({ state: "idle" })
-
-  useEffect(() => {
-    setProfiles(loadProfiles())
-  }, [])
-
-  // File upload handler
-  const handleFileUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    const reader = new FileReader()
-    reader.onload = (event) => {
-      const text = event.target?.result as string
-      onChange({ ...value, [fileTargetKey]: text })
+  // Fetch file from server and put into a specific field
+  const handleGetFile = useCallback(async (key: keyof MultiCommandInput) => {
+    setLoadingField(key)
+    try {
+      const res = await fetch("/api/ospf-file")
+      const data = await res.json()
+      
+      if (!res.ok || data.error) {
+        toast.error(data.error || "Failed to load file")
+        return
+      }
+      
+      onChange({ ...value, [key]: data.content })
+      toast.success("File loaded successfully")
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to load file")
+    } finally {
+      setLoadingField(null)
     }
-    reader.readAsText(file)
-    if (fileInputRef.current) fileInputRef.current.value = ""
-  }, [value, onChange, fileTargetKey])
+  }, [value, onChange])
 
-  const triggerFileUpload = useCallback((key: keyof MultiCommandInput) => {
-    setFileTargetKey(key)
-    // Small delay so state updates before click
-    setTimeout(() => fileInputRef.current?.click(), 0)
-  }, [])
+  // Load file and auto-parse
+  const handleGetAndParse = useCallback(async () => {
+    setIsLoadingAll(true)
+    try {
+      const res = await fetch("/api/ospf-file")
+      const data = await res.json()
+      
+      if (!res.ok || data.error) {
+        toast.error(data.error || "Failed to load file")
+        return
+      }
+      
+      // Put the file content into showIpOspfDatabaseRouter field
+      const newValue = { 
+        ...value, 
+        showIpOspfDatabaseRouter: data.content,
+        raw: data.content 
+      }
+      onChange(newValue)
+      toast.success("File loaded, generating topology...")
+      
+      // Auto-parse after state update
+      setTimeout(() => {
+        onParse()
+      }, 100)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to load file")
+    } finally {
+      setIsLoadingAll(false)
+    }
+  }, [value, onChange, onParse])
 
   const hasAnyInput = Object.values(value).some(v => v?.trim())
 
-  // SSH fetch
-  const handleSSHFetch = useCallback(async () => {
-    if (!sshHost || !sshUser || !sshPass) return
-    setSSHStatus({ state: "connecting", message: `Telnet connecting to ${sshHost}...` })
-
-    try {
-      const res = await fetch("/api/ssh-fetch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          host: sshHost.trim(),
-          port: parseInt(sshPort) || 23,
-          username: sshUser.trim(),
-          password: sshPass,
-          command: sshCommand.trim() || undefined,
-          enablePassword: sshEnable || undefined,
-        }),
-      })
-      const data = await res.json()
-      if (!res.ok || data.error) {
-        setSSHStatus({ state: "error", message: data.error || "Telnet connection failed" })
-        return
-      }
-      setSSHStatus({ state: "success", message: `Data received from ${sshHost}`, lastConnected: Date.now() })
-      if (onSSHData) onSSHData(data.data, sshHost)
-      else onChange({ ...value, raw: data.data })
-    } catch (err) {
-      setSSHStatus({ state: "error", message: err instanceof Error ? err.message : "Connection failed" })
-    }
-  }, [sshHost, sshPort, sshUser, sshPass, sshCommand, sshEnable, value, onChange, onSSHData])
-
-  const handleSaveProfile = useCallback(() => {
-    const name = profileName.trim() || `${sshHost}:${sshPort}`
-    const newProfile: SavedProfile = {
-      id: Date.now().toString(36), name,
-      host: sshHost, port: parseInt(sshPort) || 23,
-      username: sshUser, command: sshCommand,
-    }
-    const updated = [...profiles, newProfile]
-    setProfiles(updated)
-    saveProfiles(updated)
-    setProfileName("")
-  }, [profileName, sshHost, sshPort, sshUser, sshCommand, profiles])
-
-  const handleLoadProfile = useCallback((profile: SavedProfile) => {
-    setSSHHost(profile.host)
-    setSSHPort(String(profile.port))
-    setSSHUser(profile.username)
-    setSSHCommand(profile.command)
-    setShowProfiles(false)
-  }, [])
-
-  const handleDeleteProfile = useCallback((id: string) => {
-    const updated = profiles.filter((p) => p.id !== id)
-    setProfiles(updated)
-    saveProfiles(updated)
-  }, [profiles])
-
-  const isSSHBusy = sshStatus.state === "connecting" || sshStatus.state === "fetching"
-  const canConnect = sshHost.trim() && sshUser.trim() && sshPass.trim() && !isSSHBusy
-
-  // File polling state
-  const [filePollingEnabled, setFilePollingEnabled] = useState(false)
-
-  // File polling hook - reads /root/ospf_upload_file_dir/ospf_data.txt every 5 minutes
-  const filePolling = useOspfFilePolling({
-    enabled: filePollingEnabled,
-    onDataReceived: (data) => {
-      // Parse the file data and update the topology
-      // The file should contain "show ip ospf database router" output
-      const input: MultiCommandInput = {
-        showIpOspfDatabaseRouter: data,
-        raw: data,
-      }
-      onMultiInputChange?.(input)
-    },
-  })
-
   return (
     <div className="flex flex-col h-full">
-      <Tabs defaultValue="commands" className="flex flex-col h-full">
-        <div className="px-4 pt-3 pb-1">
-          <TabsList className="w-full grid grid-cols-3 h-9 bg-secondary/50">
-            <TabsTrigger
-              value="commands"
-              className="text-xs gap-1.5 data-[state=active]:bg-card data-[state=active]:text-foreground"
+      <ScrollArea className="flex-1">
+        <div className="flex flex-col px-4 py-3 gap-3">
+          {/* Header with Get & Visualize button */}
+          <div className="p-3 rounded-lg bg-primary/5 border border-primary/20">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                <FileText className="w-4 h-4 text-primary" />
+                OSPF Data
+              </h3>
+              <button
+                type="button"
+                onClick={onClear}
+                disabled={!hasAnyInput}
+                className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-destructive disabled:opacity-30 px-2 py-1 rounded-sm hover:bg-secondary/50 transition-colors"
+              >
+                <Trash2 className="w-3 h-3" />
+                Clear all
+              </button>
+            </div>
+            
+            <p className="text-xs text-muted-foreground mb-3">
+              Click the button below to load OSPF data from the server and automatically generate the network topology.
+            </p>
+            
+            <p className="text-[10px] text-muted-foreground/70 font-mono bg-secondary/30 px-2 py-1 rounded mb-3">
+              /root/ospf_upload_file_dir/ospf_data.txt
+            </p>
+            
+            <Button
+              onClick={handleGetAndParse}
+              disabled={isLoadingAll || isParsing}
+              className="w-full gap-2"
+              size="sm"
             >
-              <Database className="w-3.5 h-3.5" />
-              Commands
-            </TabsTrigger>
-            <TabsTrigger
-              value="telnet"
-              className="text-xs gap-1.5 data-[state=active]:bg-card data-[state=active]:text-foreground"
-            >
-              <Terminal className="w-3.5 h-3.5" />
-              Telnet
-            </TabsTrigger>
-            <TabsTrigger
-              value="file"
-              className="text-xs gap-1.5 data-[state=active]:bg-card data-[state=active]:text-foreground"
-            >
-              <FileText className="w-3.5 h-3.5" />
-              Auto-Poll
-            </TabsTrigger>
-          </TabsList>
-        </div>
-
-        {/* ── Commands Tab ── */}
-        <TabsContent value="commands" className="flex-1 flex flex-col mt-0 overflow-hidden">
-          <ScrollArea className="flex-1">
-            <div className="flex flex-col px-4 pb-4 gap-3">
-              <div className="flex items-center justify-between pt-1">
-                <div>
-                  <h2 className="text-xs font-semibold text-foreground">OSPF Command Outputs</h2>
-                  <p className="text-[10px] text-muted-foreground mt-0.5">
-                    Paste output from each command below. At minimum, provide the database router output.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={onClear}
-                  disabled={!hasAnyInput}
-                  className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-destructive disabled:opacity-30 px-2 py-1 rounded-sm hover:bg-secondary/50 transition-colors"
-                >
-                  <Trash2 className="w-3 h-3" />
-                  Clear all
-                </button>
-              </div>
-
-              {/* Status: filled fields count */}
-              {hasAnyInput && (
-                <div className="flex items-center gap-1.5 text-[10px] text-primary bg-primary/10 rounded-md px-2.5 py-1.5 border border-primary/20">
-                  <span className="font-semibold">
-                    {Object.values(value).filter(v => v?.trim()).length} of {COMMAND_FIELDS.length}
-                  </span>
-                  <span className="text-muted-foreground">command outputs provided</span>
-                </div>
+              {isLoadingAll || isParsing ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="w-3.5 h-3.5" />
               )}
+              {isLoadingAll ? "Loading File..." : isParsing ? "Parsing..." : "Get File & Visualize"}
+            </Button>
+          </div>
 
-              {/* Six command fields */}
-              {COMMAND_FIELDS.map((field) => (
-                <CommandSection
-                  key={field.key}
-                  field={field}
-                  value={value[field.key] ?? ""}
-                  onChange={(v) => onChange({ ...value, [field.key]: v })}
-                  onFileUpload={triggerFileUpload}
-                />
-              ))}
+          {/* Status: filled fields count */}
+          {hasAnyInput && (
+            <div className="flex items-center gap-1.5 text-[10px] text-primary bg-primary/10 rounded-md px-2.5 py-1.5 border border-primary/20">
+              <span className="font-semibold">
+                {Object.values(value).filter(v => v?.trim()).length} of {COMMAND_FIELDS.length}
+              </span>
+              <span className="text-muted-foreground">command outputs provided</span>
+            </div>
+          )}
 
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".txt,.log"
-                onChange={handleFileUpload}
-                className="hidden"
-                aria-label="Upload command output file"
+          {/* Six command fields */}
+          <div className="space-y-2">
+            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              Command Outputs
+            </h3>
+            {COMMAND_FIELDS.map((field) => (
+              <CommandSection
+                key={field.key}
+                field={field}
+                value={value[field.key] ?? ""}
+                onChange={(v) => onChange({ ...value, [field.key]: v })}
+                onGetFile={handleGetFile}
+                isLoading={loadingField === field.key}
               />
+            ))}
+          </div>
 
-              {parseError && (
-                <div className="rounded-md bg-destructive/10 border border-destructive/20 px-3 py-2">
-                  <p className="text-xs text-destructive">{parseError}</p>
-                </div>
-              )}
-
-              <Button
-                onClick={onParse}
-                disabled={!hasAnyInput || isParsing}
-                className="w-full bg-primary text-primary-foreground hover:bg-primary/90 gap-2"
-                size="sm"
-              >
-                <Play className="w-3.5 h-3.5" />
-                {isParsing ? "Parsing..." : "Parse & Visualize"}
-              </Button>
+          {parseError && (
+            <div className="rounded-md bg-destructive/10 border border-destructive/20 px-3 py-2">
+              <p className="text-xs text-destructive">{parseError}</p>
             </div>
-          </ScrollArea>
-        </TabsContent>
+          )}
 
-        {/* ── Telnet Tab ── */}
-        <TabsContent value="telnet" className="flex-1 flex flex-col mt-0 overflow-hidden">
-          <ScrollArea className="flex-1">
-            <div className="flex flex-col px-4 pb-4 gap-3">
-              {/* Status bar */}
-              <div
-                className="flex items-center gap-2 rounded-md px-3 py-2 text-xs"
-                style={{
-                  backgroundColor:
-                    sshStatus.state === "success" ? "hsl(160 70% 48% / 0.1)"
-                    : sshStatus.state === "error" ? "hsl(0 72% 51% / 0.1)"
-                    : isSSHBusy ? "hsl(200 80% 55% / 0.1)"
-                    : "hsl(220 16% 14%)",
-                  borderLeft:
-                    sshStatus.state === "success" ? "3px solid hsl(160 70% 48%)"
-                    : sshStatus.state === "error" ? "3px solid hsl(0 72% 51%)"
-                    : isSSHBusy ? "3px solid hsl(200 80% 55%)"
-                    : "3px solid hsl(220 14% 25%)",
-                }}
-              >
-                {sshStatus.state === "idle" && <WifiOff className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />}
-                {isSSHBusy && <Loader2 className="w-3.5 h-3.5 text-accent animate-spin flex-shrink-0" />}
-                {sshStatus.state === "success" && <Wifi className="w-3.5 h-3.5 text-primary flex-shrink-0" />}
-                {sshStatus.state === "error" && <WifiOff className="w-3.5 h-3.5 text-destructive flex-shrink-0" />}
-                <span className={sshStatus.state === "error" ? "text-destructive" : sshStatus.state === "success" ? "text-primary" : "text-muted-foreground"}>
-                  {sshStatus.state === "idle" ? "Not connected" : sshStatus.message}
-                </span>
-                {sshStatus.lastConnected && (
-                  <span className="ml-auto text-[10px] text-muted-foreground flex items-center gap-1">
-                    <Clock className="w-3 h-3" />
-                    {new Date(sshStatus.lastConnected).toLocaleTimeString()}
-                  </span>
-                )}
-              </div>
-
-              {/* Saved Profiles */}
-              {profiles.length > 0 && (
-                <div>
-                  <button
-                    onClick={() => setShowProfiles(!showProfiles)}
-                    className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider hover:text-foreground transition-colors w-full"
-                  >
-                    <Server className="w-3 h-3" />
-                    Saved Devices ({profiles.length})
-                    {showProfiles ? <ChevronDown className="w-3 h-3 ml-auto" /> : <ChevronRight className="w-3 h-3 ml-auto" />}
-                  </button>
-                  {showProfiles && (
-                    <div className="mt-2 flex flex-col gap-1">
-                      {profiles.map((p) => (
-                        <div
-                          key={p.id}
-                          className="flex items-center gap-2 rounded-md bg-secondary/30 border border-border px-2.5 py-1.5 hover:bg-secondary/50 transition-colors group cursor-pointer"
-                          onClick={() => handleLoadProfile(p)}
-                          role="button"
-                          tabIndex={0}
-                          onKeyDown={(e) => e.key === "Enter" && handleLoadProfile(p)}
-                        >
-                          <Server className="w-3 h-3 text-primary flex-shrink-0" />
-                          <div className="flex-1 min-w-0">
-                            <p className="text-xs font-medium text-foreground truncate">{p.name}</p>
-                            <p className="text-[10px] text-muted-foreground truncate">{p.username}@{p.host}:{p.port}</p>
-                          </div>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); handleDeleteProfile(p.id) }}
-                            className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity"
-                            aria-label={`Delete profile ${p.name}`}
-                          >
-                            <Trash2 className="w-3 h-3" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Connection Form */}
-              <div className="flex flex-col gap-2.5">
-                <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Router Credentials</h3>
-                <div className="grid grid-cols-[1fr_70px] gap-2">
-                  <div className="flex flex-col gap-1">
-                    <Label className="text-[10px] text-muted-foreground">Host / IP Address</Label>
-                    <Input value={sshHost} onChange={(e) => setSSHHost(e.target.value)} placeholder="192.168.1.1" className="h-8 text-xs font-mono bg-secondary/30 border-border" disabled={isSSHBusy} />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <Label className="text-[10px] text-muted-foreground">Port</Label>
-                    <Input value={sshPort} onChange={(e) => setSSHPort(e.target.value)} placeholder="23" className="h-8 text-xs font-mono bg-secondary/30 border-border" disabled={isSSHBusy} />
-                  </div>
-                </div>
-                <div className="flex flex-col gap-1">
-                  <Label className="text-[10px] text-muted-foreground">Username</Label>
-                  <Input value={sshUser} onChange={(e) => setSSHUser(e.target.value)} placeholder="admin" className="h-8 text-xs font-mono bg-secondary/30 border-border" disabled={isSSHBusy} autoComplete="username" />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <Label className="text-[10px] text-muted-foreground">Password</Label>
-                  <div className="relative">
-                    <Input value={sshPass} onChange={(e) => setSSHPass(e.target.value)} type={showPassword ? "text" : "password"} placeholder="********" className="h-8 text-xs font-mono bg-secondary/30 border-border pr-8" disabled={isSSHBusy} autoComplete="current-password" />
-                    <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" aria-label={showPassword ? "Hide password" : "Show password"}>
-                      {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                    </button>
-                  </div>
-                </div>
-                <div className="flex flex-col gap-1">
-                  <Label className="text-[10px] text-muted-foreground">Enable Password <span className="text-muted-foreground/50">(optional)</span></Label>
-                  <Input value={sshEnable} onChange={(e) => setSSHEnable(e.target.value)} type="password" placeholder="Enable secret" className="h-8 text-xs font-mono bg-secondary/30 border-border" disabled={isSSHBusy} autoComplete="off" />
-                </div>
-              </div>
-
-              <div className="flex flex-col gap-2">
-                <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Command</h3>
-                <Input value={sshCommand} onChange={(e) => setSSHCommand(e.target.value)} placeholder="show ip ospf database (default)" className="h-8 text-xs font-mono bg-secondary/30 border-border" disabled={isSSHBusy} />
-                <p className="text-[10px] text-muted-foreground/60 leading-relaxed">
-                  Leave empty to run default OSPF commands, or enter a custom command.
-                </p>
-              </div>
-
-              <div className="flex flex-col gap-2 mt-1">
-                <Button onClick={handleSSHFetch} disabled={!canConnect} className="w-full bg-primary text-primary-foreground hover:bg-primary/90 gap-2" size="sm">
-                  {isSSHBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Terminal className="w-3.5 h-3.5" />}
-                  {sshStatus.state === "connecting" ? "Connecting..." : sshStatus.state === "fetching" ? "Fetching OSPF Data..." : "Connect & Fetch"}
-                </Button>
-
-                {sshHost && sshUser && (
-                  <div className="flex items-center gap-2">
-                    <Input value={profileName} onChange={(e) => setProfileName(e.target.value)} placeholder={`${sshHost} (profile name)`} className="h-7 text-xs bg-secondary/30 border-border flex-1" />
-                    <Button variant="outline" size="sm" onClick={handleSaveProfile} className="h-7 text-xs gap-1 shrink-0">
-                      <Save className="w-3 h-3" />
-                      Save
-                    </Button>
-                  </div>
-                )}
-              </div>
-
-            </div>
-          </ScrollArea>
-        </TabsContent>
-
-        {/* ── File Auto-Poll Tab ── */}
-        <TabsContent value="file" className="flex-1 flex flex-col mt-0 overflow-hidden">
-          <ScrollArea className="flex-1">
-            <div className="px-4 py-3 space-y-4">
-              {/* Info Section */}
-              <div className="p-3 rounded-lg bg-primary/5 border border-primary/20">
-                <h3 className="text-sm font-semibold text-foreground mb-1.5 flex items-center gap-2">
-                  <FileText className="w-4 h-4 text-primary" />
-                  Auto-Poll OSPF File
-                </h3>
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  Automatically reads the OSPF data file from the server every 5 minutes and updates the topology diagram. A notification will appear on each poll.
-                </p>
-                <p className="text-xs text-muted-foreground/70 mt-2 font-mono">
-                  File: /root/ospf_upload_file_dir/ospf_data.txt
-                </p>
-              </div>
-
-              {/* Status Section */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/30 border border-border">
-                  <div className="flex flex-col gap-1">
-                    <span className="text-sm font-medium">
-                      {filePollingEnabled ? (
-                        <span className="text-primary flex items-center gap-1.5">
-                          <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
-                          Auto-polling active
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">Auto-polling disabled</span>
-                      )}
-                    </span>
-                    {filePolling.lastPoll && (
-                      <span className="text-[10px] text-muted-foreground">
-                        Last poll: {filePolling.lastPoll.toLocaleTimeString()}
-                      </span>
-                    )}
-                    {filePolling.nextPoll && filePollingEnabled && (
-                      <span className="text-[10px] text-muted-foreground">
-                        Next poll: {filePolling.nextPoll.toLocaleTimeString()}
-                      </span>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setFilePollingEnabled(!filePollingEnabled)}
-                    className={`relative w-12 h-6 rounded-full transition-colors ${
-                      filePollingEnabled
-                        ? "bg-primary"
-                        : "bg-muted-foreground/30"
-                    } cursor-pointer`}
-                    aria-label={filePollingEnabled ? "Disable auto-polling" : "Enable auto-polling"}
-                  >
-                    <span
-                      className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow transition-transform ${
-                        filePollingEnabled ? "translate-x-6" : "translate-x-1"
-                      }`}
-                    />
-                  </button>
-                </div>
-
-                {/* Stats */}
-                {filePolling.pollCount > 0 && (
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="p-2 rounded bg-secondary/20 border border-border">
-                      <span className="text-[10px] text-muted-foreground block">Total Polls</span>
-                      <span className="text-sm font-semibold text-foreground">{filePolling.pollCount}</span>
-                    </div>
-                    {filePolling.lastModified && (
-                      <div className="p-2 rounded bg-secondary/20 border border-border">
-                        <span className="text-[10px] text-muted-foreground block">File Modified</span>
-                        <span className="text-[10px] font-medium text-foreground">
-                          {new Date(filePolling.lastModified).toLocaleString()}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Error Display */}
-                {filePolling.error && (
-                  <div className="p-2 rounded bg-destructive/10 border border-destructive/30">
-                    <span className="text-xs text-destructive">{filePolling.error}</span>
-                  </div>
-                )}
-
-                {/* Manual Poll Button */}
-                <Button
-                  onClick={filePolling.pollNow}
-                  disabled={filePolling.isPolling}
-                  variant="outline"
-                  className="w-full gap-2"
-                  size="sm"
-                >
-                  {filePolling.isPolling ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <RefreshCw className="w-3.5 h-3.5" />
-                  )}
-                  {filePolling.isPolling ? "Polling..." : "Poll Now"}
-                </Button>
-              </div>
-            </div>
-          </ScrollArea>
-        </TabsContent>
-      </Tabs>
+          <Button
+            onClick={onParse}
+            disabled={!hasAnyInput || isParsing}
+            className="w-full bg-primary text-primary-foreground hover:bg-primary/90 gap-2"
+            size="sm"
+          >
+            <Play className="w-3.5 h-3.5" />
+            {isParsing ? "Parsing..." : "Parse & Visualize"}
+          </Button>
+        </div>
+      </ScrollArea>
     </div>
   )
 }
